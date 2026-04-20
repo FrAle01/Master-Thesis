@@ -1,0 +1,86 @@
+data:
+  pyterrier_dataset: "irds:msmarco-passage/trec-dl-2019/judged"
+  text_fields: ["text"]
+  max_docs: 50000
+  max_queries: 200
+  topic_column: "query"
+  docno_column: "docno"
+  training_dataset_name: "Tevatron/msmarco-passage"
+  training_split: "train"
+  training_format: "hf_triplet"
+  query_column: "query"
+  positive_column: "positive"
+  negative_column: "negative"
+  local_terrier_index_path: "./indices/msmarco-passage"
+  build_local_terrier_index_if_missing: true
+  terrier_index_threads: 4
+  terrier_index_overwrite: false
+  terrier_meta_lengths:
+    docno: 64
+    text: 4096
+
+model:
+  mode: "finetune"
+  backend: "sentence_transformers"
+  model_name_or_path: "nomic-ai/modernbert-embed-base"
+  trust_remote_code: true
+  query_prompt: "search_query: "
+  document_prompt: "search_document: "
+  similarity: "dot"
+  full_profile_name: "full"
+
+profiles:
+  - {name: "d64", dimension: 64, normalize: true}
+  - {name: "d128", dimension: 128, normalize: true}
+  - {name: "d256", dimension: 256, normalize: true}
+  - {name: "full", dimension: 768, normalize: true}
+
+utility:
+  metric: "relative_score_dissimilarity"
+  epsilon: 1.0e-6
+  alpha: 0.7
+  sample_pairs_per_query: 32
+
+optimization:
+  budget_gb: 0.30
+  algorithm: "lagrangian_dual"
+  max_iter: 64
+  tolerance: 1.0e-3
+  mode: "streaming"
+  streaming_reestimate_every_docs: 5000
+
+retrieval:
+  mode: "pyterrier_candidates"
+  top_k: 100
+  candidate_k: 200
+  terrier_wmodel: "BM25"
+
+execution:
+  output_dir: "outputs"
+  experiment_name: "finetune_nomic_streaming"
+  device: "cuda"
+  dtype: "float16"
+  doc_batch_size: 128
+  query_batch_size: 64
+  save_score_pairs: true
+  save_runs: true
+  verbose: true
+
+training:
+  enabled: false
+  output_model_dir: "outputs/models/nomic_mrl_msmarco"
+  base_loss: "MultipleNegativesRankingLoss"
+  use_matryoshka: true
+  use_2d_matryoshka: false
+  matryoshka_dimensions: [64, 128, 256, 768]
+  epochs: 1
+  per_device_train_batch_size: 16
+  gradient_accumulation_steps: 1
+  learning_rate: 2.0e-5
+  warmup_ratio: 0.1
+  weight_decay: 0.01
+  fp16: true
+  bf16: false
+  save_steps: 1000
+  eval_steps: 1000
+  logging_steps: 50

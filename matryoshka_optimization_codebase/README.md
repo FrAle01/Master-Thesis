@@ -1,0 +1,173 @@
+# Matryoshka GPU Retrieval Experiment
+
+This codebase implements the experiment discussed in the thesis project:
+
+- encode documents with **Matryoshka-style embeddings**;
+- support either an **existing checkpoint** (e.g. `ielabgroup/Starbucks-msmarco`) or **fine-tuning** a model on a user-selected dataset;
+- estimate the utility of reduced representations with configurable score-preservation metrics;
+- solve a **document-wise relaxed memory-constrained optimization problem** using a Lagrangian dual;
+- compare retrieval effectiveness against the **full-embedding baseline**;
+- save all intermediate and final artefacts for later plotting and analysis.
+
+The code is designed to be modular and readable. The environment in this sandbox does **not** include PyTerrier / Sentence Transformers / Transformers / FAISS, so the code was written to be executed on your own GPU VM, not run here.
+
+## Main features
+
+- **Model options**
+  - direct use of existing Matryoshka-like models through `SentenceTransformer`
+  - direct use of `ielabgroup/Starbucks-msmarco` through a hidden-state / layer-aware adapter
+  - optional fine-tuning of a base embedding model with `MatryoshkaLoss` or `Matryoshka2dLoss`
+- **Utility metrics**
+  - relative score dissimilarity (default)
+  - absolute score error
+  - squared score error
+  - relative margin preservation
+  - hybrid score + margin utility
+- **Execution modes**
+  - batch corpus processing
+  - streaming corpus processing with periodic budget control
+- **Retrieval modes**
+  - exact dense retrieval over the embedded corpus
+  - PyTerrier candidate generation + dense re-scoring
+- **Persistence**
+  - profile catalogue
+  - sampled score pairs
+  - per-document utility table
+  - optimized assignments
+  - full and optimized run files
+  - PyTerrier evaluation output
+  - JSON summaries for memory and optimization statistics
+
+## Suggested environment
+
+Python 3.10+
+CUDA GPU with enough VRAM for the chosen encoder
+
+Install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+## Structure
+
+```text
+configs/
+src/matryoshka_exp/
+  cli.py
+  config.py
+  logging_utils.py
+  experiment.py
+  data/
+  models/
+  training/
+  metrics/
+  optimization/
+  retrieval/
+  results/
+```
+
+## Typical workflows
+
+### 1) Use Starbucks-msmarco directly
+
+```bash
+python -m matryoshka_exp.cli run --config configs/starbucks_msmarco_batch.yaml
+```
+
+### 2) Fine-tune a base embedding model first
+
+```bash
+python -m matryoshka_exp.cli train --config configs/finetune_nomic_msmarco_batch.yaml
+python -m matryoshka_exp.cli run --config configs/finetune_nomic_msmarco_batch.yaml
+```
+
+## Notes about PyTerrier integration
+
+PyTerrier is used **when possible** for:
+
+- dataset access via `pt.get_dataset(...)`
+- corpus iteration via `dataset.get_corpus_iter()`
+- candidate generation with BM25 if a Terrier index is available
+- evaluation with `pt.Experiment(...)` or `pt.Evaluate(...)`
+
+When exact dense search is selected, dense retrieval is executed directly with grouped profile scoring, because variable representation sizes are not naturally represented by a standard PyTerrier transformer.
+
+## Important implementation choices
+
+### 1) Representation profiles
+
+The code does not assume that profiles differ only by dimension.
+Each profile can define:
+
+- `dimension`
+- optional `layer`
+- `normalize`
+- optional `cost_bytes`
+
+This allows the same optimization code to work with:
+
+- standard Matryoshka models (dimension only)
+- Starbucks / 2D Matryoshka style models (layer + dimension)
+
+### 2) Relaxed optimization
+
+The optimizer solves the Lagrangian dual of:
+
+```text
+maximize   sum_i sum_k x_{ik} u_{ik}
+subject to sum_i sum_k x_{ik} c_k <= B
+           sum_k x_{ik} = 1
+           x_{ik} in [0,1]
+```
+
+For a fixed lambda, each document independently selects the profile maximizing:
+
+```text
+u_{ik} - lambda * c_k
+```
+
+This provides a simple and efficient document-wise solver. In practice the returned solution is discrete except in ties.
+
+### 3) Utility estimation
+
+The utility table is estimated from sampled `(query, document)` pairs:
+
+- full score `s(d,q)` is computed using the full profile
+- reduced score `s_r(d,q)` is computed using the candidate profile
+- the configured metric maps the difference into a utility in `[0,1]`
+
+The default metric is the robust version of **relative score dissimilarity**:
+
+```text
+1 - min(1, |s - s_r| / max(|s|, eps))
+```
+
+### 4) Streaming mode
+
+In streaming mode the solver can use a fixed or periodically refreshed dual variable `lambda`.
+This is useful when documents arrive incrementally and the corpus cannot be materialized fully before assignment.
+
+## Outputs
+
+Every run creates a folder like:
+
+```text
+outputs/<experiment_name>/
+  config.snapshot.yaml
+  profile_catalog.csv
+  sampled_score_pairs.parquet
+  per_document_utility.parquet
+  assignments.parquet
+  full_run.parquet
+  optimized_run.parquet
+  pt_experiment.csv
+  summary.json
+  memory_summary.json
+```
+
+## Recommended starting configurations
+
+- `configs/starbucks_msmarco_batch.yaml`
+- `configs/finetune_nomic_msmarco_batch.yaml`
+- `configs/finetune_nomic_streaming.yaml`

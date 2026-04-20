@@ -1,0 +1,13 @@
+pyyaml>=6.0
+pandas>=2.2.0
+numpy>=1.26.0
+tqdm>=4.66.0
+torch>=2.2.0
+transformers>=4.45.0
+sentence-transformers>=3.1.0
+datasets>=2.20.0
+pyterrier>=0.13.0
+faiss-gpu>=1.7.2 ; platform_system != "Darwin"
+ir-measures>=0.3.3
+pyarrow>=16.1.0
+scikit-learn>=1.5.0
