@@ -4,6 +4,7 @@ from pathlib import Path
 
 from ..config import ExperimentConfig
 from ..data.training_data import TrainingDatasetLoader
+from .lora_utils import apply_lora_to_sentence_transformer, save_lora_adapter
 
 
 class SbertMatryoshkaFinetuner:
@@ -22,12 +23,25 @@ class SbertMatryoshkaFinetuner:
 
         cfg = self.config
         tcfg = cfg.training
+        finetune_strategy = tcfg.finetune_strategy.lower()
+        if cfg.model.backend != "sentence_transformers":
+            raise ValueError(
+                "SbertMatryoshkaFinetuner supports only `sentence_transformers` backend. "
+                f"Received: {cfg.model.backend}"
+            )
 
         model = SentenceTransformer(
             cfg.model.model_name_or_path,
             device=cfg.execution.device,
             trust_remote_code=cfg.model.trust_remote_code,
         )
+        lora_target_modules = []
+        if finetune_strategy == "lora":
+            if not tcfg.lora.enabled:
+                self.logger.warning("`training.lora.enabled` is false but strategy is `lora`; proceeding with LoRA.")
+            lora_target_modules = apply_lora_to_sentence_transformer(model, tcfg.lora, logger=self.logger)
+        elif finetune_strategy != "full":
+            raise ValueError(f"Unsupported fine-tuning strategy: {tcfg.finetune_strategy}")
 
         loader = TrainingDatasetLoader(
             dataset_name=cfg.data.training_dataset_name,
@@ -36,7 +50,10 @@ class SbertMatryoshkaFinetuner:
             query_column=cfg.data.query_column,
             positive_column=cfg.data.positive_column,
             negative_column=cfg.data.negative_column,
-            local_path=cfg.data.local_corpus_path,
+            tevatron_positive_passages_column=cfg.data.tevatron_positive_passages_column,
+            tevatron_negative_passages_column=cfg.data.tevatron_negative_passages_column,
+            tevatron_passage_text_field=cfg.data.tevatron_passage_text_field,
+            training_local_path=cfg.data.training_local_path,
         )
         train_ds = loader.load()
 
@@ -90,8 +107,21 @@ class SbertMatryoshkaFinetuner:
             train_dataset=train_ds,
             loss=train_loss,
         )
-        self.logger.info("Starting Sentence Transformers fine-tuning.")
+        self.logger.info("Starting Sentence Transformers fine-tuning with strategy `%s`.", finetune_strategy)
         trainer.train()
+        if finetune_strategy == "lora":
+            adapter_path = save_lora_adapter(
+                model,
+                tcfg.lora.output_adapter_dir,
+                metadata={
+                    "base_model_name_or_path": cfg.model.model_name_or_path,
+                    "adapter_name": tcfg.lora.adapter_name,
+                    "target_modules": lora_target_modules,
+                },
+            )
+            self.logger.info("Saved LoRA adapter to %s", adapter_path)
+            return adapter_path
+
         trainer.save_model(tcfg.output_model_dir)
         self.logger.info("Saved fine-tuned model to %s", tcfg.output_model_dir)
         return Path(tcfg.output_model_dir)

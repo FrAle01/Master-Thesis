@@ -1,17 +1,14 @@
 from __future__ import annotations
 
-from collections import defaultdict
 from dataclasses import asdict
-from pathlib import Path
-from typing import Dict, Iterable, Iterator, List, Tuple
+from typing import Dict
 
 import numpy as np
 import pandas as pd
 import torch
-from tqdm import tqdm
 
 from .config import ExperimentConfig, save_config_snapshot
-from .data.pyterrier_utils import CorpusRecord, PyTerrierLoader
+from .data.pyterrier_utils import PyTerrierLoader
 from .logging_utils import configure_logging
 from .metrics.score_metrics import (
     compute_pointwise_utility,
@@ -19,9 +16,8 @@ from .metrics.score_metrics import (
     relative_margin_utility,
 )
 from .models.factory import create_encoder
-from .models.base import RepresentationProfile
 from .optimization.lagrangian import LagrangianProfileOptimizer
-from .retrieval.dense import DenseGroupedRetriever, EmbeddedCorpus
+from .retrieval.dense import DenseGroupedRetriever
 from .retrieval.materialization import encode_full_corpus, materialize_grouped_corpus
 from .results.persistence import ensure_dir, save_df, save_json
 from .training.sbert_trainer import SbertMatryoshkaFinetuner
@@ -38,11 +34,25 @@ class ExperimentRunner:
         if not self.config.training.enabled:
             return
         finetuner = SbertMatryoshkaFinetuner(self.config, self.logger)
-        model_dir = finetuner.run()
-        self.config.model.model_name_or_path = str(model_dir)
-        self.logger.info("Updated experiment to use fine-tuned model at %s", model_dir)
+        artifact_dir = finetuner.run()
+        strategy = self.config.training.finetune_strategy.lower()
+        if strategy == "lora":
+            self.config.model.adapter_type = "lora"
+            self.config.model.adapter_path = str(artifact_dir)
+            self.config.model.adapter_name = self.config.training.lora.adapter_name
+            self.logger.info("Updated experiment to use base model + LoRA adapter at %s", artifact_dir)
+            return
+
+        self.config.model.model_name_or_path = str(artifact_dir)
+        self.config.model.adapter_type = None
+        self.config.model.adapter_path = None
+        self.config.model.adapter_name = "default"
+        self.logger.info("Updated experiment to use fine-tuned model at %s", artifact_dir)
 
     def run(self) -> Dict:
+        if self.config.optimization.mode == "streaming":
+            raise NotImplementedError("Not implemented: streaming mode is currently disabled.")
+
         self.train_if_requested()
         adapter, profiles = create_encoder(self.config)
         profile_by_name = {p.name: p for p in profiles}
@@ -63,12 +73,8 @@ class ExperimentRunner:
             prompt_name="query",
             batch_size=self.config.execution.query_batch_size,
         ).cpu()
-        query_emb_by_id = {qid: emb.unsqueeze(0) for qid, emb in zip(query_ids, full_query_embeddings)}
-
-        if self.config.optimization.mode == "streaming":
-            payload = self._run_streaming(loader, adapter, profiles, profile_by_name, full_profile, topics, qrels, full_query_embeddings)
-        else:
-            payload = self._run_batch(loader, adapter, profiles, profile_by_name, full_profile, topics, qrels, full_query_embeddings)
+        self._sync_profile_costs_with_observed_dtype(profiles, full_query_embeddings, stage="query encoding")
+        payload = self._run_batch(loader, adapter, profiles, profile_by_name, full_profile, topics, qrels, full_query_embeddings)
 
         full_run = payload["full_run"]
         opt_run = payload["opt_run"]
@@ -122,6 +128,7 @@ class ExperimentRunner:
             prompt_name="document",
             verbose=self.config.execution.verbose,
         )
+        self._sync_profile_costs_with_observed_dtype(profiles, full_doc_embeddings, stage="batch document encoding")
         save_df(metadata, self.output_dir / "corpus_metadata.parquet")
 
         utility_pairs_df, utility_table_df = self._estimate_document_utilities_for_subset(
@@ -178,153 +185,6 @@ class ExperimentRunner:
             "opt_result": opt_result,
         }
 
-    def _run_streaming(self, loader, adapter, profiles, profile_by_name, full_profile, topics, qrels, full_query_embeddings):
-        self.logger.info("Running streaming mode with online profile assignment.")
-        budget_bytes = self.config.budget_bytes_resolved()
-        streaming_reestimate_every_docs = self.config.optimization.streaming_reestimate_every_docs
-
-        all_docnos: List[str] = []
-        metadata_rows: List[Dict] = []
-        utility_pairs_parts: List[pd.DataFrame] = []
-        utility_rows: List[Dict] = []
-        assignment_rows: List[Dict] = []
-
-        full_docnos_by_profile = defaultdict(list)
-        full_embs_by_profile = defaultdict(list)
-        opt_docnos_by_profile = defaultdict(list)
-        opt_embs_by_profile = defaultdict(list)
-        full_lookup = {}
-        opt_lookup = {}
-
-        optimizer = LagrangianProfileOptimizer(
-            profiles=profiles,
-            budget_bytes=budget_bytes,
-            max_iter=self.config.optimization.max_iter,
-            tolerance=self.config.optimization.tolerance,
-        )
-
-        pending_records: List[CorpusRecord] = []
-        current_lambda = 0.0
-        processed_docs = 0
-        warmup_done = False
-
-        def flush_batch(records: List[CorpusRecord], lambda_value: float):
-            nonlocal processed_docs
-            if not records:
-                return lambda_value
-
-            batch_docnos = [r.docno for r in records]
-            batch_texts = [r.text for r in records]
-            batch_full_emb = adapter.embed_texts(
-                batch_texts,
-                full_profile,
-                prompt_name="document",
-                batch_size=self.config.execution.doc_batch_size,
-            ).cpu()
-
-            batch_pairs_df, batch_util_df = self._estimate_document_utilities_for_subset(
-                adapter=adapter,
-                profiles=profiles,
-                full_profile=full_profile,
-                topics=topics,
-                qrels=qrels,
-                subset_docnos=batch_docnos,
-                subset_doc_embeddings=batch_full_emb,
-                full_query_embeddings=full_query_embeddings,
-            )
-            utility_pairs_parts.append(batch_pairs_df)
-            utility_rows.extend(batch_util_df.to_dict(orient="records"))
-
-            # Re-estimate lambda periodically using the utility accumulated so far.
-            if (not warmup_done) or (processed_docs > 0 and processed_docs % streaming_reestimate_every_docs == 0):
-                current_utility_df = pd.DataFrame(utility_rows)
-                if not current_utility_df.empty:
-                    partial_result = optimizer.solve(current_utility_df)
-                    lambda_value = partial_result.lambda_star
-                    self.logger.info("Updated streaming lambda to %.6f after %d documents.", lambda_value, processed_docs)
-
-            for idx, record in enumerate(records):
-                docno = record.docno
-                full_emb = batch_full_emb[idx].detach().cpu()
-                doc_profile_rows = [row for row in batch_util_df.to_dict(orient="records") if row["docno"] == docno]
-                profile_util_map = {row["profile"]: row["utility"] for row in doc_profile_rows}
-                chosen_profile_name = optimizer.choose_profile_online(profile_util_map, lambda_value)
-                chosen_profile = profile_by_name[chosen_profile_name]
-                reduced = full_emb[: chosen_profile.dimension].clone().detach().cpu()
-
-                all_docnos.append(docno)
-                metadata_rows.append({"docno": docno, "text": record.text})
-                assignment_rows.append(
-                    {
-                        "docno": docno,
-                        "profile": chosen_profile_name,
-                        "utility": float(profile_util_map[chosen_profile_name]),
-                        "cost_bytes": chosen_profile.cost_bytes,
-                    }
-                )
-
-                full_docnos_by_profile[full_profile.name].append(docno)
-                full_embs_by_profile[full_profile.name].append(full_emb)
-                opt_docnos_by_profile[chosen_profile_name].append(docno)
-                opt_embs_by_profile[chosen_profile_name].append(reduced)
-                full_lookup[docno] = (full_profile.name, full_emb)
-                opt_lookup[docno] = (chosen_profile_name, reduced)
-                processed_docs += 1
-            return lambda_value
-
-        for record in tqdm(loader.iter_corpus(), desc="Streaming corpus", disable=not self.config.execution.verbose):
-            pending_records.append(record)
-            if len(pending_records) >= self.config.execution.doc_batch_size:
-                current_lambda = flush_batch(pending_records, current_lambda)
-                pending_records = []
-                warmup_done = True
-        if pending_records:
-            current_lambda = flush_batch(pending_records, current_lambda)
-
-        metadata = pd.DataFrame(metadata_rows)
-        save_df(metadata, self.output_dir / "corpus_metadata.parquet")
-
-        full_corpus = EmbeddedCorpus(
-            docnos_by_profile={k: v for k, v in full_docnos_by_profile.items()},
-            embeddings_by_profile={k: torch.stack(v, dim=0) for k, v in full_embs_by_profile.items()},
-        )
-        opt_corpus = EmbeddedCorpus(
-            docnos_by_profile={k: v for k, v in opt_docnos_by_profile.items()},
-            embeddings_by_profile={k: torch.stack(v, dim=0) for k, v in opt_embs_by_profile.items()},
-        )
-
-        assignments = pd.DataFrame(assignment_rows)
-        utility_pairs_df = pd.concat(utility_pairs_parts, ignore_index=True) if utility_pairs_parts else pd.DataFrame()
-        utility_table_df = pd.DataFrame(utility_rows)
-        opt_result = type("StreamingOptimizationResult", (), {
-            "lambda_star": float(current_lambda),
-            "feasible": int(assignments["cost_bytes"].sum()) <= budget_bytes,
-            "total_utility": float(assignments["utility"].sum()),
-        })()
-
-        retriever = DenseGroupedRetriever(adapter, profile_by_name, self.config.model.similarity, self.config.retrieval.top_k)
-        query_ids = topics["qid"].astype(str).tolist()
-        query_emb_by_id = {qid: emb.unsqueeze(0) for qid, emb in zip(query_ids, full_query_embeddings)}
-
-        if self.config.retrieval.mode == "dense_exact":
-            full_run = retriever.search_exact(query_ids, full_query_embeddings, full_corpus)
-            opt_run = retriever.search_exact(query_ids, full_query_embeddings, opt_corpus)
-        else:
-            candidates = loader.build_bm25_candidates(self.config.retrieval, topics)
-            save_df(candidates, self.output_dir / "bm25_candidates.parquet")
-            full_run = retriever.rerank_candidates(candidates, query_emb_by_id, full_lookup)
-            opt_run = retriever.rerank_candidates(candidates, query_emb_by_id, opt_lookup)
-
-        return {
-            "full_run": full_run,
-            "opt_run": opt_run,
-            "assignments": assignments,
-            "utility_pairs_df": utility_pairs_df,
-            "utility_table_df": utility_table_df,
-            "docnos": all_docnos,
-            "opt_result": opt_result,
-        }
-
     def _estimate_document_utilities_for_subset(
         self,
         *,
@@ -339,8 +199,19 @@ class ExperimentRunner:
     ):
         doc_index = {docno: i for i, docno in enumerate(subset_docnos)}
         sample_pairs = self._build_score_sampling_frame(topics, qrels, subset_docnos)
+        sample_columns = ["qid", "docno", "profile", "full_score", "reduced_score", "utility"]
         sampled_rows = []
         per_doc_profile_utilities = defaultdict(list)
+
+        if sample_pairs.empty:
+            utility_pairs_df = pd.DataFrame(columns=sample_columns)
+            aggregated_rows = []
+            for docno in subset_docnos:
+                for profile in profiles:
+                    default_utility = 1.0 if profile.name == full_profile.name else 0.0
+                    aggregated_rows.append({"docno": docno, "profile": profile.name, "utility": default_utility})
+            utility_table_df = pd.DataFrame(aggregated_rows, columns=["docno", "profile", "utility"])
+            return utility_pairs_df, utility_table_df
 
         qid_to_position = {str(qid): i for i, qid in enumerate(topics["qid"].astype(str).tolist())}
         for qid, group in sample_pairs.groupby("qid"):
@@ -396,14 +267,14 @@ class ExperimentRunner:
                     })
                     per_doc_profile_utilities[(docno, profile.name)].append(float(u))
 
-        utility_pairs_df = pd.DataFrame(sampled_rows)
+        utility_pairs_df = pd.DataFrame(sampled_rows, columns=sample_columns)
         aggregated_rows = []
         for docno in subset_docnos:
             for profile in profiles:
                 values = per_doc_profile_utilities.get((docno, profile.name), [])
                 agg = float(np.mean(values)) if values else (1.0 if profile.name == full_profile.name else 0.0)
                 aggregated_rows.append({"docno": docno, "profile": profile.name, "utility": agg})
-        utility_table_df = pd.DataFrame(aggregated_rows)
+        utility_table_df = pd.DataFrame(aggregated_rows, columns=["docno", "profile", "utility"])
         return utility_pairs_df, utility_table_df
 
     def _build_score_sampling_frame(self, topics, qrels, subset_docnos):
@@ -425,7 +296,31 @@ class ExperimentRunner:
             selected = (positives + negatives)[:max_pairs]
             for docno in selected:
                 sampled.append({"qid": qid, "docno": docno})
-        return pd.DataFrame(sampled)
+        return pd.DataFrame(sampled, columns=["qid", "docno"])
+
+    def _sync_profile_costs_with_observed_dtype(self, profiles, embeddings: torch.Tensor, *, stage: str) -> None:
+        if embeddings.numel() == 0:
+            return
+
+        expected_dtype = {
+            "float16": torch.float16,
+            "bfloat16": torch.bfloat16,
+            "float32": torch.float32,
+        }.get(self.config.execution.dtype, torch.float32)
+        observed_dtype = embeddings.dtype
+        if observed_dtype != expected_dtype:
+            self.logger.warning(
+                "Configured execution dtype is `%s` but %s produced `%s`; profile costs will use observed dtype.",
+                self.config.execution.dtype,
+                stage,
+                observed_dtype,
+            )
+
+        bytes_per_value = embeddings.element_size()
+        for profile in profiles:
+            if profile.cost_is_explicit:
+                continue
+            profile.cost_bytes = int(profile.dimension * bytes_per_value)
 
     def _evaluate_with_pyterrier(self, loader, topics, qrels, full_run, opt_run):
         pt = loader.pt

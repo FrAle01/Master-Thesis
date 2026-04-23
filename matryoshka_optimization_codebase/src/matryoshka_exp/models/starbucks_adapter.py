@@ -66,7 +66,9 @@ class StarbucksAdapter(EncoderAdapter):
                 if profile.normalize:
                     pooled = torch.nn.functional.normalize(pooled, p=2, dim=-1)
                 outputs.append(pooled.detach().cpu())
-        return torch.cat(outputs, dim=0)
+        if not outputs:
+            return torch.empty((0, profile.dimension), dtype=self.target_torch_dtype)
+        return self.cast_embeddings(torch.cat(outputs, dim=0))
 
     def _pool(self, token_embeddings: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
         if self.model_cfg.pooling == "cls":

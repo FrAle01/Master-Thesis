@@ -100,12 +100,17 @@ class LagrangianProfileOptimizer:
         )
 
     def choose_profile_online(self, doc_profile_utility: Dict[str, float], lambda_value: float) -> str:
+        if not self.profiles:
+            raise ValueError("No profiles are available for online profile selection.")
         best_profile = None
         best_value = None
         for profile in self.profiles:
+            if profile.name not in doc_profile_utility:
+                raise ValueError(f"Missing utility value for profile `{profile.name}`.")
             value = float(doc_profile_utility[profile.name]) - lambda_value * profile.cost_bytes
             if best_value is None or value > best_value:
                 best_value = value
                 best_profile = profile.name
-        assert best_profile is not None
+        if best_profile is None:
+            raise RuntimeError("Failed to select an online profile despite non-empty profile catalog.")
         return best_profile

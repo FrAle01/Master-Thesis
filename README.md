@@ -17,6 +17,7 @@ The code is designed to be modular and readable. The environment in this sandbox
   - direct use of existing Matryoshka-like models through `SentenceTransformer`
   - direct use of `ielabgroup/Starbucks-msmarco` through a hidden-state / layer-aware adapter
   - optional fine-tuning of a base embedding model with `MatryoshkaLoss` or `Matryoshka2dLoss`
+  - optional LoRA adapter fine-tuning for `sentence_transformers` backends (base model + adapter at inference)
 - **Utility metrics**
   - relative score dissimilarity (default)
   - absolute score error
@@ -25,7 +26,6 @@ The code is designed to be modular and readable. The environment in this sandbox
   - hybrid score + margin utility
 - **Execution modes**
   - batch corpus processing
-  - streaming corpus processing with periodic budget control
 - **Retrieval modes**
   - exact dense retrieval over the embedded corpus
   - PyTerrier candidate generation + dense re-scoring
@@ -81,6 +81,19 @@ python -m matryoshka_exp.cli run --config configs/starbucks_msmarco_batch.yaml
 python -m matryoshka_exp.cli train --config configs/finetune_nomic_msmarco_batch.yaml
 python -m matryoshka_exp.cli run --config configs/finetune_nomic_msmarco_batch.yaml
 ```
+
+### 3) Fine-tune with LoRA adapters
+
+```bash
+python -m matryoshka_exp.cli train --config configs/finetune_nomic_lora_msmarco_batch.yaml
+python -m matryoshka_exp.cli run --config configs/finetune_nomic_lora_msmarco_batch.yaml
+```
+
+LoRA is controlled through:
+
+- `training.finetune_strategy: lora`
+- `training.lora.*` for adapter hyperparameters and save path
+- `model.adapter_type/adapter_path/adapter_name` for inference-time loading (automatically injected when running `train` + `run` in one execution)
 
 ## Notes about PyTerrier integration
 
@@ -143,11 +156,6 @@ The default metric is the robust version of **relative score dissimilarity**:
 1 - min(1, |s - s_r| / max(|s|, eps))
 ```
 
-### 4) Streaming mode
-
-In streaming mode the solver can use a fixed or periodically refreshed dual variable `lambda`.
-This is useful when documents arrive incrementally and the corpus cannot be materialized fully before assignment.
-
 ## Outputs
 
 Every run creates a folder like:
@@ -170,4 +178,4 @@ outputs/<experiment_name>/
 
 - `configs/starbucks_msmarco_batch.yaml`
 - `configs/finetune_nomic_msmarco_batch.yaml`
-- `configs/finetune_nomic_streaming.yaml`
+- `configs/finetune_nomic_lora_msmarco_batch.yaml`

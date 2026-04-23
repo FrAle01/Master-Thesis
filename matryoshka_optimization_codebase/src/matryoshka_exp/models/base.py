@@ -17,6 +17,7 @@ class RepresentationProfile:
     layer: Optional[int]
     normalize: bool
     cost_bytes: int
+    cost_is_explicit: bool = False
 
 
 class EncoderAdapter(ABC):
@@ -30,6 +31,11 @@ class EncoderAdapter(ABC):
         self.model_cfg = model_cfg
         self.device = device
         self.dtype = dtype
+        self.target_torch_dtype = {
+            "float16": torch.float16,
+            "bfloat16": torch.bfloat16,
+            "float32": torch.float32,
+        }.get(dtype, torch.float32)
 
     @abstractmethod
     def embed_texts(
@@ -51,6 +57,11 @@ class EncoderAdapter(ABC):
             return q @ d.T
         raise ValueError(f"Unsupported similarity: {self.model_cfg.similarity}")
 
+    def cast_embeddings(self, embeddings: torch.Tensor) -> torch.Tensor:
+        if embeddings.dtype != self.target_torch_dtype:
+            embeddings = embeddings.to(self.target_torch_dtype)
+        return embeddings
+
 
 def build_profile_catalog(profiles: List[ProfileConfig], dtype: str) -> List[RepresentationProfile]:
     bytes_per_value = {
@@ -61,7 +72,8 @@ def build_profile_catalog(profiles: List[ProfileConfig], dtype: str) -> List[Rep
 
     catalog: List[RepresentationProfile] = []
     for item in profiles:
-        cost = item.cost_bytes if item.cost_bytes is not None else item.dimension * bytes_per_value
+        explicit_cost = item.cost_bytes is not None
+        cost = item.cost_bytes if explicit_cost else item.dimension * bytes_per_value
         catalog.append(
             RepresentationProfile(
                 name=item.name,
@@ -69,6 +81,7 @@ def build_profile_catalog(profiles: List[ProfileConfig], dtype: str) -> List[Rep
                 layer=item.layer,
                 normalize=item.normalize,
                 cost_bytes=int(cost),
+                cost_is_explicit=explicit_cost,
             )
         )
     return catalog

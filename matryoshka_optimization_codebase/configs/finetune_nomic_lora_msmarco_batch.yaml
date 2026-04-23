@@ -1,16 +1,12 @@
 data:
   pyterrier_dataset: "irds:msmarco-passage/trec-dl-2019/judged"
   text_fields: ["text"]
-  max_docs: 50000
-  max_queries: 200
+  max_docs: null
+  max_queries: null
   topic_column: "query"
   docno_column: "docno"
-  training_dataset_name: "Tevatron/msmarco-passage"
-  training_split: "train"
-  training_format: "hf_triplet"
-  query_column: "query"
-  positive_column: "positive"
-  negative_column: "negative"
+  candidate_source: "pyterrier_bm25"
+  candidates_per_query: 200
   local_terrier_index_path: "./indices/msmarco-passage"
   build_local_terrier_index_if_missing: true
   terrier_index_threads: 4
@@ -18,46 +14,55 @@ data:
   terrier_meta_lengths:
     docno: 64
     text: 4096
+  training_dataset_name: "Tevatron/msmarco-passage"
+  training_split: "train"
+  training_format: "hf_tevatron_passage"
+  query_column: "query"
+  positive_column: "positive_passages"
+  negative_column: "negative_passages"
+  tevatron_positive_passages_column: "positive_passages"
+  tevatron_negative_passages_column: "negative_passages"
+  tevatron_passage_text_field: "text"
 
 model:
-  mode: "finetune"
+  mode: "pretrained"
   backend: "sentence_transformers"
   model_name_or_path: "nomic-ai/modernbert-embed-base"
   trust_remote_code: true
-  query_prompt: "search_query: "
-  document_prompt: "search_document: "
+  query_prompt: ""
+  document_prompt: ""
   similarity: "dot"
   full_profile_name: "full"
+  pooling: "mean"
 
 profiles:
-  - {name: "d64", dimension: 64, normalize: true}
   - {name: "d128", dimension: 128, normalize: true}
   - {name: "d256", dimension: 256, normalize: true}
+  - {name: "d512", dimension: 512, normalize: true}
   - {name: "full", dimension: 768, normalize: true}
 
 utility:
   metric: "relative_score_dissimilarity"
   epsilon: 1.0e-6
   alpha: 0.7
-  sample_pairs_per_query: 32
+  sample_pairs_per_query: 64
 
 optimization:
-  budget_gb: 0.30
+  budget_gb: 0.20
   algorithm: "lagrangian_dual"
   max_iter: 64
   tolerance: 1.0e-3
-  mode: "streaming"
-  streaming_reestimate_every_docs: 5000
+  mode: "batch"
 
 retrieval:
-  mode: "pyterrier_candidates"
+  mode: "dense_exact"
   top_k: 100
   candidate_k: 200
   terrier_wmodel: "BM25"
 
 execution:
   output_dir: "outputs"
-  experiment_name: "finetune_nomic_streaming"
+  experiment_name: "finetune_nomic_lora_msmarco_batch"
   device: "cuda"
   dtype: "float16"
   doc_batch_size: 128
@@ -67,20 +72,33 @@ execution:
   verbose: true
 
 training:
-  enabled: false
-  output_model_dir: "outputs/models/nomic_mrl_msmarco"
+  enabled: true
+  finetune_strategy: "lora"
   base_loss: "MultipleNegativesRankingLoss"
   use_matryoshka: true
   use_2d_matryoshka: false
-  matryoshka_dimensions: [64, 128, 256, 768]
+  matryoshka_dimensions: [512, 256, 128]
   epochs: 1
   per_device_train_batch_size: 16
   gradient_accumulation_steps: 1
   learning_rate: 2.0e-5
   warmup_ratio: 0.1
   weight_decay: 0.01
+  max_steps: -1
   fp16: true
   bf16: false
   save_steps: 1000
   eval_steps: 1000
   logging_steps: 50
+  lora:
+    enabled: true
+    r: 16
+    alpha: 32
+    dropout: 0.05
+    bias: "none"
+    task_type: "FEATURE_EXTRACTION"
+    target_modules: []
+    exclude_modules: ["lm_head", "classifier", "pooler"]
+    modules_to_save: []
+    adapter_name: "default"
+    output_adapter_dir: "outputs/models/nomic_lora_adapter"

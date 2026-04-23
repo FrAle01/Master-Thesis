@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional
 
@@ -21,6 +22,7 @@ class PyTerrierLoader:
         self.data_cfg = data_cfg
         self._pt = None
         self._dataset = None
+        self._logger = logging.getLogger("matryoshka_exp")
 
     def ensure_initialized(self):
         import pyterrier as pt
@@ -55,12 +57,13 @@ class PyTerrierLoader:
 
     def load_qrels(self) -> pd.DataFrame:
         if self.data_cfg.local_qrels_path:
-            return pd.read_csv(self.data_cfg.local_qrels_path, sep="\t")
-        qrels = (
-            self.dataset.get_qrels(self.data_cfg.qrels_variant)
-            if self.data_cfg.qrels_variant
-            else self.dataset.get_qrels()
-        )
+            qrels = pd.read_csv(self.data_cfg.local_qrels_path, sep="\t")
+        else:
+            qrels = (
+                self.dataset.get_qrels(self.data_cfg.qrels_variant)
+                if self.data_cfg.qrels_variant
+                else self.dataset.get_qrels()
+            )
         if self.data_cfg.max_queries:
             topics = self.load_topics()
             qrels = qrels[qrels["qid"].isin(topics["qid"])]
@@ -69,12 +72,16 @@ class PyTerrierLoader:
     def iter_corpus(self) -> Iterator[CorpusRecord]:
         if self.data_cfg.local_corpus_path:
             df = pd.read_parquet(self.data_cfg.local_corpus_path)
+            emitted = 0
             for row in df.to_dict(orient="records"):
                 yield CorpusRecord(
                     docno=str(row[self.data_cfg.docno_column]),
                     text=self._compose_text(row),
                     raw=row,
                 )
+                emitted += 1
+                if self.data_cfg.max_docs is not None and emitted >= self.data_cfg.max_docs:
+                    break
             return
 
         iterator = self.dataset.get_corpus_iter(verbose=True)
@@ -178,8 +185,12 @@ class PyTerrierLoader:
                 built_in = dataset.get_index()
                 if built_in is not None:
                     return built_in
-            except Exception:
-                pass
+            except (AttributeError, KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
+                self._logger.warning(
+                    "Failed to use built-in Terrier index for dataset %s; falling back to local index. Error: %s",
+                    self.data_cfg.pyterrier_dataset,
+                    exc,
+                )
 
         return self._load_or_build_local_index()
 

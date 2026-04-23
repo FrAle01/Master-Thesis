@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+import warnings
 
 import yaml
 
@@ -31,11 +32,15 @@ class DataConfig:
     local_topics_path: Optional[str] = None
     local_qrels_path: Optional[str] = None
     training_dataset_name: Optional[str] = None
+    training_local_path: Optional[str] = None
     training_split: str = "train"
     training_format: str = "hf_triplet"
     query_column: str = "query"
     positive_column: str = "positive"
     negative_column: Optional[str] = "negative"
+    tevatron_positive_passages_column: str = "positive_passages"
+    tevatron_negative_passages_column: str = "negative_passages"
+    tevatron_passage_text_field: str = "text"
     candidate_source: str = "pyterrier_bm25"
     candidates_per_query: int = 200
     local_terrier_index_path: Optional[str] = None
@@ -51,6 +56,9 @@ class ModelConfig:
     backend: str = "sentence_transformers"
     model_name_or_path: str = "nomic-ai/modernbert-embed-base"
     tokenizer_name_or_path: Optional[str] = None
+    adapter_type: Optional[str] = None
+    adapter_path: Optional[str] = None
+    adapter_name: str = "default"
     trust_remote_code: bool = False
     query_prompt: str = ""
     document_prompt: str = ""
@@ -61,8 +69,24 @@ class ModelConfig:
 
 
 @dataclass
+class LoraTrainingConfig:
+    enabled: bool = False
+    r: int = 16
+    alpha: int = 32
+    dropout: float = 0.05
+    bias: str = "none"
+    task_type: str = "FEATURE_EXTRACTION"
+    target_modules: List[str] = field(default_factory=list)
+    exclude_modules: List[str] = field(default_factory=lambda: ["lm_head", "classifier"])
+    modules_to_save: List[str] = field(default_factory=list)
+    adapter_name: str = "default"
+    output_adapter_dir: str = "outputs/models/lora_adapter"
+
+
+@dataclass
 class TrainingConfig:
     enabled: bool = False
+    finetune_strategy: str = "full"
     output_model_dir: str = "outputs/models/finetuned"
     base_loss: str = "MultipleNegativesRankingLoss"
     use_matryoshka: bool = True
@@ -81,6 +105,7 @@ class TrainingConfig:
     save_steps: int = 1000
     eval_steps: int = 1000
     logging_steps: int = 50
+    lora: LoraTrainingConfig = field(default_factory=LoraTrainingConfig)
 
 
 @dataclass
@@ -157,13 +182,124 @@ class ExperimentConfig:
         return int(self.optimization.budget_gb * (1024 ** 3))
 
 
-def _construct_dataclass(cls, payload: Dict[str, Any]):
-    return cls(**payload)
+def _construct_dataclass(cls, payload: Optional[Dict[str, Any]]):
+    return cls(**(payload or {}))
+
+
+def _construct_training_config(payload: Optional[Dict[str, Any]]) -> TrainingConfig:
+    payload = dict(payload or {})
+    lora_payload = payload.pop("lora", {})
+    return TrainingConfig(
+        **payload,
+        lora=_construct_dataclass(LoraTrainingConfig, lora_payload),
+    )
+
+
+def _validate_choice(name: str, value: str, allowed: set[str]) -> None:
+    if value not in allowed:
+        raise ValueError(f"Unsupported {name}: {value}. Allowed values: {sorted(allowed)}")
+
+
+def _apply_deprecated_data_mappings(
+    cfg: ExperimentConfig,
+    *,
+    raw_data: Optional[Dict[str, Any]],
+    raw_retrieval: Optional[Dict[str, Any]],
+) -> None:
+    raw_data = raw_data or {}
+    raw_retrieval = raw_retrieval or {}
+
+    if "candidates_per_query" in raw_data:
+        if "candidate_k" not in raw_retrieval:
+            cfg.retrieval.candidate_k = int(cfg.data.candidates_per_query)
+            warnings.warn(
+                "`data.candidates_per_query` is deprecated; mapped to `retrieval.candidate_k`.",
+                stacklevel=2,
+            )
+        elif int(raw_retrieval["candidate_k"]) != int(cfg.data.candidates_per_query):
+            warnings.warn(
+                "`data.candidates_per_query` is deprecated and ignored because `retrieval.candidate_k` is set.",
+                stacklevel=2,
+            )
+
+    if "candidate_source" in raw_data:
+        candidate_source = str(cfg.data.candidate_source).strip().lower()
+        mapped_mode = {
+            "pyterrier_bm25": "pyterrier_candidates",
+            "dense_exact": "dense_exact",
+        }.get(candidate_source)
+        if mapped_mode is None:
+            raise ValueError(
+                f"Unsupported deprecated `data.candidate_source`: {cfg.data.candidate_source}. "
+                "Supported values are: ['dense_exact', 'pyterrier_bm25']."
+            )
+        if "mode" not in raw_retrieval:
+            cfg.retrieval.mode = mapped_mode
+            warnings.warn(
+                "`data.candidate_source` is deprecated; mapped to `retrieval.mode`.",
+                stacklevel=2,
+            )
+        elif str(raw_retrieval["mode"]) != mapped_mode:
+            warnings.warn(
+                "`data.candidate_source` is deprecated and ignored because `retrieval.mode` is set.",
+                stacklevel=2,
+            )
+
+
+def _validate_config(cfg: ExperimentConfig) -> None:
+    if not cfg.profiles:
+        raise ValueError("Config must define at least one profile in `profiles`.")
+
+    profile_names = {item.name for item in cfg.profiles}
+    if cfg.model.full_profile_name not in profile_names:
+        raise ValueError(
+            f"`model.full_profile_name` ({cfg.model.full_profile_name}) is not present in `profiles`."
+        )
+
+    _validate_choice("model.backend", cfg.model.backend, {"sentence_transformers", "transformers"})
+    _validate_choice("model.similarity", cfg.model.similarity, {"dot", "cosine"})
+    _validate_choice("optimization.mode", cfg.optimization.mode, {"batch", "streaming"})
+    _validate_choice("retrieval.mode", cfg.retrieval.mode, {"dense_exact", "pyterrier_candidates"})
+    _validate_choice(
+        "utility.metric",
+        cfg.utility.metric,
+        {
+            "relative_score_dissimilarity",
+            "absolute_score_utility",
+            "squared_score_utility",
+            "relative_margin_utility",
+            "hybrid_score_margin_utility",
+        },
+    )
+    _validate_choice("training.finetune_strategy", cfg.training.finetune_strategy.lower(), {"full", "lora"})
+    _validate_choice(
+        "data.training_format",
+        cfg.data.training_format,
+        {"hf_triplet", "hf_tevatron_passage", "jsonl_triplet"},
+    )
+
+    if cfg.retrieval.candidate_k <= 0:
+        raise ValueError("`retrieval.candidate_k` must be > 0.")
+    if cfg.retrieval.top_k <= 0:
+        raise ValueError("`retrieval.top_k` must be > 0.")
+
+    if cfg.training.enabled:
+        if cfg.data.training_format == "jsonl_triplet" and not cfg.data.training_local_path:
+            raise ValueError("`data.training_local_path` is required when `data.training_format` is `jsonl_triplet`.")
+        if cfg.data.training_format in {"hf_triplet", "hf_tevatron_passage"} and not cfg.data.training_dataset_name:
+            raise ValueError(
+                "`data.training_dataset_name` is required for Hugging Face training formats (`hf_triplet`, "
+                "`hf_tevatron_passage`)."
+            )
 
 
 def load_config(path: str | Path) -> ExperimentConfig:
     with open(path, "r", encoding="utf-8") as f:
-        raw = yaml.safe_load(f)
+        raw = yaml.safe_load(f) or {}
+
+    for key in ("data", "model", "profiles"):
+        if key not in raw:
+            raise ValueError(f"Missing required top-level config section: `{key}`")
 
     cfg = ExperimentConfig(
         data=_construct_dataclass(DataConfig, raw["data"]),
@@ -173,8 +309,14 @@ def load_config(path: str | Path) -> ExperimentConfig:
         optimization=_construct_dataclass(OptimizationConfig, raw.get("optimization", {})),
         retrieval=_construct_dataclass(RetrievalConfig, raw.get("retrieval", {})),
         execution=_construct_dataclass(ExecutionConfig, raw.get("execution", {})),
-        training=_construct_dataclass(TrainingConfig, raw.get("training", {})),
+        training=_construct_training_config(raw.get("training", {})),
     )
+    _apply_deprecated_data_mappings(
+        cfg,
+        raw_data=raw.get("data"),
+        raw_retrieval=raw.get("retrieval"),
+    )
+    _validate_config(cfg)
     return cfg
 
 

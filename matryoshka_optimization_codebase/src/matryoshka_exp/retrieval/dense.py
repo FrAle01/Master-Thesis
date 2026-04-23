@@ -72,6 +72,9 @@ class DenseGroupedRetriever:
         query_embeddings_full: Dict[str, torch.Tensor],
         corpus_lookup: Dict[str, Tuple[str, torch.Tensor]],
     ) -> pd.DataFrame:
+        if candidates.empty:
+            return pd.DataFrame(columns=["qid", "docno", "score", "rank"])
+
         rows = []
         for qid, group in candidates.groupby("qid"):
             q_full = query_embeddings_full[qid]
@@ -88,4 +91,6 @@ class DenseGroupedRetriever:
             reranked = reranked.sort_values("score", ascending=False).reset_index(drop=True)
             reranked["rank"] = np.arange(1, len(reranked) + 1)
             rows.append(reranked[["qid", "docno", "score", "rank"]])
+        if not rows:
+            return pd.DataFrame(columns=["qid", "docno", "score", "rank"])
         return pd.concat(rows, ignore_index=True)

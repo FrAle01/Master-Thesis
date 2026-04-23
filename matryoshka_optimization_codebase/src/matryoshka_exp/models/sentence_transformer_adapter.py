@@ -5,6 +5,7 @@ from typing import List
 import torch
 
 from .base import EncoderAdapter, RepresentationProfile
+from ..training.lora_utils import load_lora_adapter
 
 
 class SentenceTransformerAdapter(EncoderAdapter):
@@ -28,6 +29,13 @@ class SentenceTransformerAdapter(EncoderAdapter):
             device=device,
             trust_remote_code=model_cfg.trust_remote_code,
         )
+        if model_cfg.adapter_type is None:
+            return
+        if model_cfg.adapter_type != "lora":
+            raise ValueError(f"Unsupported adapter_type: {model_cfg.adapter_type}")
+        if not model_cfg.adapter_path:
+            raise ValueError("model.adapter_path must be provided when model.adapter_type is `lora`.")
+        load_lora_adapter(self.model, model_cfg.adapter_path, adapter_name=model_cfg.adapter_name)
 
     def embed_texts(
         self,
@@ -50,4 +58,4 @@ class SentenceTransformerAdapter(EncoderAdapter):
             normalize_embeddings=profile.normalize,
             truncate_dim=profile.dimension,
         )
-        return embeddings
+        return self.cast_embeddings(embeddings)
