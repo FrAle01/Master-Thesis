@@ -48,6 +48,11 @@ class DataConfig:
     terrier_index_threads: int = 4
     terrier_index_overwrite: bool = False
     terrier_meta_lengths: Dict[str, int] = field(default_factory=lambda: {"docno": 64, "text": 4096})
+    full_embeddings_source: str = "auto"
+    hf_embeddings_repo_id: Optional[str] = None
+    hf_embeddings_split: str = "train"
+    hf_embeddings_docno_column: str = "docno"
+    hf_embeddings_vector_column: str = "full_embedding"
 
 
 @dataclass
@@ -141,6 +146,7 @@ class RetrievalConfig:
     batch_size_docs: int = 256
     use_pyterrier_bm25: bool = True
     terrier_wmodel: str = "BM25"
+    use_torch_gpu_exact: bool = True
 
 
 @dataclass
@@ -148,6 +154,7 @@ class ExecutionConfig:
     output_dir: str = "outputs"
     experiment_name: str = "matryoshka_experiment"
     device: str = "cuda"
+    retrieval_device: str = "cuda"
     dtype: str = "float16"
     doc_batch_size: int = 256
     query_batch_size: int = 32
@@ -157,6 +164,7 @@ class ExecutionConfig:
     save_score_pairs: bool = True
     save_runs: bool = True
     verbose: bool = True
+    retrieval_vram_utilization_limit: float = 0.9
 
 
 @dataclass
@@ -259,6 +267,12 @@ def _validate_config(cfg: ExperimentConfig) -> None:
     _validate_choice("model.backend", cfg.model.backend, {"sentence_transformers", "transformers"})
     _validate_choice("model.similarity", cfg.model.similarity, {"dot", "cosine"})
     _validate_choice("optimization.mode", cfg.optimization.mode, {"batch", "streaming"})
+    if cfg.optimization.mode == "streaming":
+        raise ValueError(
+            "`optimization.mode=streaming` is currently disabled. "
+            "Use `optimization.mode=batch`."
+        )
+    _validate_choice("execution.retrieval_device", cfg.execution.retrieval_device, {"cuda", "cpu"})
     _validate_choice("retrieval.mode", cfg.retrieval.mode, {"dense_exact", "pyterrier_candidates"})
     _validate_choice(
         "utility.metric",
@@ -277,11 +291,33 @@ def _validate_config(cfg: ExperimentConfig) -> None:
         cfg.data.training_format,
         {"hf_triplet", "hf_tevatron_passage", "jsonl_triplet"},
     )
+    _validate_choice(
+        "data.full_embeddings_source",
+        cfg.data.full_embeddings_source,
+        {"auto", "hf_dataset", "compute"},
+    )
 
     if cfg.retrieval.candidate_k <= 0:
         raise ValueError("`retrieval.candidate_k` must be > 0.")
     if cfg.retrieval.top_k <= 0:
         raise ValueError("`retrieval.top_k` must be > 0.")
+    if cfg.utility.margin_negatives <= 0:
+        raise ValueError("`utility.margin_negatives` must be > 0.")
+    _validate_choice("utility.aggregate", cfg.utility.aggregate, {"mean"})
+
+    if cfg.data.pyterrier_dataset is None:
+        missing = []
+        if not cfg.data.local_topics_path:
+            missing.append("data.local_topics_path")
+        if not cfg.data.local_qrels_path:
+            missing.append("data.local_qrels_path")
+        if not cfg.data.local_corpus_path:
+            missing.append("data.local_corpus_path")
+        if missing:
+            raise ValueError(
+                "When `data.pyterrier_dataset` is not set, local inputs are required. Missing: "
+                + ", ".join(missing)
+            )
 
     if cfg.training.enabled:
         if cfg.data.training_format == "jsonl_triplet" and not cfg.data.training_local_path:
@@ -291,6 +327,11 @@ def _validate_config(cfg: ExperimentConfig) -> None:
                 "`data.training_dataset_name` is required for Hugging Face training formats (`hf_triplet`, "
                 "`hf_tevatron_passage`)."
             )
+
+    if cfg.data.full_embeddings_source in {"auto", "hf_dataset"} and not cfg.data.hf_embeddings_repo_id:
+        raise ValueError(
+            "`data.hf_embeddings_repo_id` is required when `data.full_embeddings_source` is `auto` or `hf_dataset`."
+        )
 
 
 def load_config(path: str | Path) -> ExperimentConfig:

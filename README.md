@@ -37,6 +37,7 @@ The code is designed to be modular and readable. The environment in this sandbox
   - full and optimized run files
   - PyTerrier evaluation output
   - JSON summaries for memory and optimization statistics
+  - optional full-document embedding cache on a dedicated Hugging Face dataset (load + fallback compute + push)
 
 ## Suggested environment
 
@@ -107,6 +108,27 @@ PyTerrier is used **when possible** for:
 When exact dense search is selected, dense retrieval is executed directly with grouped profile scoring, because variable representation sizes are not naturally represented by a standard PyTerrier transformer.
 
 ## Important implementation choices
+
+### 0) Full embedding cache on Hugging Face
+
+`data.full_embeddings_source` controls how full document embeddings are resolved:
+
+- `auto` (default): try load from Hugging Face, otherwise compute locally and push to Hugging Face
+- `hf_dataset`: try load from Hugging Face first; on missing/incomplete data, fallback to compute and push
+- `compute`: compute locally and then push to Hugging Face
+
+Relevant config keys:
+
+- `data.hf_embeddings_repo_id`
+- `data.hf_embeddings_split`
+- `data.hf_embeddings_docno_column`
+- `data.hf_embeddings_vector_column`
+
+`data.hf_embeddings_repo_id` is treated as a base repo name. The runtime derives a
+model-specific dataset id by appending a deterministic signature of the active model
+(and adapter, when present), so each model writes/reads from its own embedding dataset.
+
+Authentication is read from `HF_TOKEN` or `HUGGINGFACE_HUB_TOKEN`.
 
 ### 1) Representation profiles
 

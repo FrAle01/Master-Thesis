@@ -45,7 +45,10 @@ class PyTerrierLoader:
 
     def load_topics(self) -> pd.DataFrame:
         if self.data_cfg.local_topics_path:
-            return pd.read_csv(self.data_cfg.local_topics_path, sep="\t")
+            topics = pd.read_csv(self.data_cfg.local_topics_path, sep="\t")
+            if self.data_cfg.max_queries:
+                topics = topics.head(self.data_cfg.max_queries).copy()
+            return topics
         topics = (
             self.dataset.get_topics(self.data_cfg.topics_variant)
             if self.data_cfg.topics_variant

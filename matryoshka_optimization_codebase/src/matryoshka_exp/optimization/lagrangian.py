@@ -27,11 +27,23 @@ class LagrangianProfileOptimizer:
     This is the classical document-wise decomposition induced by the Lagrangian relaxation.
     """
 
-    def __init__(self, profiles: List[RepresentationProfile], budget_bytes: int, max_iter: int, tolerance: float):
+    def __init__(
+        self,
+        profiles: List[RepresentationProfile],
+        budget_bytes: int,
+        max_iter: int,
+        tolerance: float,
+        lambda_low: float = 0.0,
+        lambda_high: float = 1.0,
+    ):
         self.profiles = profiles
         self.budget_bytes = int(budget_bytes)
         self.max_iter = max_iter
         self.tolerance = tolerance
+        self.lambda_low = float(lambda_low)
+        self.lambda_high = float(lambda_high)
+        if self.lambda_low < 0 or self.lambda_high < self.lambda_low:
+            raise ValueError("Invalid lambda bounds: require 0 <= lambda_low <= lambda_high.")
         self.profile_names = [p.name for p in profiles]
         self.cost_lookup = {p.name: p.cost_bytes for p in profiles}
 
@@ -49,8 +61,9 @@ class LagrangianProfileOptimizer:
         utility_matrix = pivot.values.astype(np.float64)
         docnos = pivot.index.to_numpy()
 
-        lambda_low = 0.0
-        lambda_high = max(1.0, float(np.max(utility_matrix) / max(np.min(cost_vector), 1.0)))
+        lambda_low = self.lambda_low
+        dynamic_high = max(1.0, float(np.max(utility_matrix) / max(np.min(cost_vector), 1.0)))
+        lambda_high = max(self.lambda_high, dynamic_high)
         best_assignments = None
         best_cost = None
         best_lambda = 0.0

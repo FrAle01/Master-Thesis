@@ -49,6 +49,8 @@ def materialize_grouped_corpus(
     full_embeddings: torch.Tensor,
     assignments: pd.DataFrame,
     profiles: Dict[str, RepresentationProfile],
+    *,
+    target_device: str = "cpu",
 ) -> Tuple[EmbeddedCorpus, Dict[str, Tuple[str, torch.Tensor]]]:
     grouped_docnos: Dict[str, List[str]] = defaultdict(list)
     grouped_embs: Dict[str, List[torch.Tensor]] = defaultdict(list)
@@ -58,7 +60,11 @@ def materialize_grouped_corpus(
     for docno, full_emb in zip(full_docnos, full_embeddings):
         profile_name = profile_by_docno[docno]
         profile = profiles[profile_name]
-        reduced = full_emb[: profile.dimension].clone().detach().cpu()
+        reduced = full_emb[: profile.dimension].clone().detach()
+        if target_device != "cpu":
+            reduced = reduced.to(target_device)
+        else:
+            reduced = reduced.cpu()
         grouped_docnos[profile_name].append(docno)
         grouped_embs[profile_name].append(reduced)
         lookup[docno] = (profile_name, reduced)
@@ -66,7 +72,10 @@ def materialize_grouped_corpus(
     corpus = EmbeddedCorpus(
         docnos_by_profile={k: v for k, v in grouped_docnos.items()},
         embeddings_by_profile={
-            k: torch.stack(v, dim=0) if len(v) else torch.empty((0, profiles[k].dimension)) for k, v in grouped_embs.items()
+            k: (
+                torch.stack(v, dim=0) if len(v) else torch.empty((0, profiles[k].dimension), device=target_device)
+            )
+            for k, v in grouped_embs.items()
         },
     )
     return corpus, lookup

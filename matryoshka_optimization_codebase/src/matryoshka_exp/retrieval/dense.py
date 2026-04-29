@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Tuple
+import logging
+from typing import Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
@@ -17,18 +18,18 @@ class EmbeddedCorpus:
 
 
 class DenseGroupedRetriever:
-    """Exact dense retrieval with variable document profiles.
+    """Exact dense retrieval with variable document profiles and GPU-first scoring."""
 
-    Documents are partitioned by their chosen profile. For each query, the retriever
-    scores the corresponding query representation against each profile-specific matrix
-    and merges the top-k candidates globally.
-    """
-
-    def __init__(self, adapter: EncoderAdapter, profiles: Dict[str, RepresentationProfile], similarity: str, top_k: int):
+    def __init__(self, adapter: EncoderAdapter, profiles: Dict[str, RepresentationProfile], similarity: str, top_k: int, device: str = "cuda"):
         self.adapter = adapter
         self.profiles = profiles
         self.similarity = similarity
         self.top_k = top_k
+        self.device = device
+        self._logger = logging.getLogger("matryoshka_exp")
+
+    def _as_device(self, tensor: torch.Tensor) -> torch.Tensor:
+        return tensor if str(tensor.device) == self.device else tensor.to(self.device)
 
     def search_exact(
         self,
@@ -37,34 +38,38 @@ class DenseGroupedRetriever:
         corpus: EmbeddedCorpus,
     ) -> pd.DataFrame:
         rows = []
+        query_embeddings_full = self._as_device(query_embeddings_full)
         for q_offset, qid in enumerate(query_ids):
             q_full = query_embeddings_full[q_offset : q_offset + 1]
-            scored_chunks = []
-            doc_chunks = []
+            all_scores_t = []
+            all_docnos = []
             for profile_name, doc_matrix in corpus.embeddings_by_profile.items():
                 if doc_matrix.numel() == 0:
                     continue
                 profile = self.profiles[profile_name]
+                doc_matrix = self._as_device(doc_matrix)
                 q_view = q_full[:, : profile.dimension]
-                scores = self.adapter.similarity(q_view, doc_matrix).squeeze(0).detach().cpu().numpy()
-                scored_chunks.append(scores)
-                doc_chunks.append(np.array(corpus.docnos_by_profile[profile_name], dtype=object))
+                scores = self.adapter.similarity(q_view, doc_matrix).squeeze(0)
+                all_scores_t.append(scores)
+                all_docnos.extend(corpus.docnos_by_profile[profile_name])
 
-            if not scored_chunks:
+            if not all_scores_t:
                 continue
-            all_scores = np.concatenate(scored_chunks)
-            all_docnos = np.concatenate(doc_chunks)
-            order = np.argsort(-all_scores)[: self.top_k]
-            for rank, idx in enumerate(order, start=1):
-                rows.append(
-                    {
-                        "qid": qid,
-                        "docno": str(all_docnos[idx]),
-                        "score": float(all_scores[idx]),
-                        "rank": rank,
-                    }
-                )
-        return pd.DataFrame(rows)
+
+            all_scores = torch.cat(all_scores_t, dim=0)
+            k = min(self.top_k, int(all_scores.shape[0]))
+            top_scores, top_idx = torch.topk(all_scores, k=k, largest=True, sorted=True)
+            top_scores = top_scores.detach().cpu().tolist()
+            top_idx = top_idx.detach().cpu().tolist()
+
+            for rank, (score, idx) in enumerate(zip(top_scores, top_idx), start=1):
+                rows.append({
+                    "qid": qid,
+                    "docno": str(all_docnos[idx]),
+                    "score": float(score),
+                    "rank": rank,
+                })
+        return pd.DataFrame(rows, columns=["qid", "docno", "score", "rank"])
 
     def rerank_candidates(
         self,
@@ -77,20 +82,42 @@ class DenseGroupedRetriever:
 
         rows = []
         for qid, group in candidates.groupby("qid"):
-            q_full = query_embeddings_full[qid]
-            scores = []
-            for _, row in group.iterrows():
-                docno = str(row["docno"])
-                profile_name, doc_emb = corpus_lookup[docno]
+            q_full = self._as_device(query_embeddings_full[qid])
+            group = group.copy()
+            group["docno"] = group["docno"].astype(str)
+            in_lookup = group["docno"].isin(corpus_lookup)
+            dropped_count = int((~in_lookup).sum())
+            if dropped_count:
+                self._logger.warning(
+                    "Dropping %s candidate docs for qid=%s because embeddings are unavailable in corpus lookup.",
+                    dropped_count,
+                    qid,
+                )
+            group = group[in_lookup]
+            if group.empty:
+                continue
+
+            profile_docnos: Dict[str, List[str]] = {}
+            for docno in group["docno"].tolist():
+                profile_name, _ = corpus_lookup[docno]
+                profile_docnos.setdefault(profile_name, []).append(docno)
+
+            score_map: Dict[str, float] = {}
+            for profile_name, docnos in profile_docnos.items():
                 profile = self.profiles[profile_name]
                 q_view = q_full[:, : profile.dimension]
-                score = self.adapter.similarity(q_view, doc_emb.unsqueeze(0)).item()
-                scores.append(score)
+                doc_batch = torch.stack([corpus_lookup[d][1] for d in docnos], dim=0)
+                doc_batch = self._as_device(doc_batch)
+                scores = self.adapter.similarity(q_view, doc_batch).squeeze(0).detach().cpu().tolist()
+                for d, s in zip(docnos, scores):
+                    score_map[d] = float(s)
+
             reranked = group.copy()
-            reranked["score"] = scores
-            reranked = reranked.sort_values("score", ascending=False).reset_index(drop=True)
+            reranked["score"] = reranked["docno"].astype(str).map(score_map).astype(float)
+            reranked = reranked.sort_values("score", ascending=False, kind="mergesort").reset_index(drop=True)
             reranked["rank"] = np.arange(1, len(reranked) + 1)
             rows.append(reranked[["qid", "docno", "score", "rank"]])
+
         if not rows:
             return pd.DataFrame(columns=["qid", "docno", "score", "rank"])
         return pd.concat(rows, ignore_index=True)

@@ -23,6 +23,11 @@ data:
   terrier_meta_lengths:
     docno: 64
     text: 4096
+  full_embeddings_source: "auto"
+  hf_embeddings_repo_id: "FrAle01/msmarco-passage-full-embeddings"
+  hf_embeddings_split: "train"
+  hf_embeddings_docno_column: "docno"
+  hf_embeddings_vector_column: "full_embedding"
 
 model:
   mode: "finetune"
