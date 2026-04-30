@@ -9,6 +9,7 @@ from typing import Dict
 import numpy as np
 import pandas as pd
 import torch
+from tqdm import tqdm
 
 from .config import ExperimentConfig, save_config_snapshot
 from .data.pyterrier_utils import PyTerrierLoader
@@ -119,7 +120,13 @@ class ExperimentRunner:
         return summary
 
     def _run_batch(self, loader, adapter, profiles, profile_by_name, full_profile, topics, qrels, full_query_embeddings):
-        corpus_records = list(loader.iter_corpus())
+        corpus_records = list(
+            tqdm(
+                loader.iter_corpus(),
+                desc="Loading corpus records",
+                disable=not self.config.execution.verbose,
+            )
+        )
         docnos = [record.docno for record in corpus_records]
         metadata = pd.DataFrame(
             [{"docno": record.docno, "text": record.text} for record in corpus_records],
@@ -210,13 +217,33 @@ class ExperimentRunner:
         query_emb_by_id = {qid: emb.unsqueeze(0) for qid, emb in zip(query_ids, full_query_embeddings)}
 
         if self.config.retrieval.mode == "dense_exact":
-            full_run = retriever.search_exact(query_ids, full_query_embeddings, full_corpus)
-            opt_run = retriever.search_exact(query_ids, full_query_embeddings, opt_corpus)
+            full_run = retriever.search_exact(
+                query_ids,
+                full_query_embeddings,
+                full_corpus,
+                verbose=self.config.execution.verbose,
+            )
+            opt_run = retriever.search_exact(
+                query_ids,
+                full_query_embeddings,
+                opt_corpus,
+                verbose=self.config.execution.verbose,
+            )
         else:
             candidates = loader.build_bm25_candidates(self.config.retrieval, topics)
             save_df(candidates, self.output_dir / "bm25_candidates.parquet")
-            full_run = retriever.rerank_candidates(candidates, query_emb_by_id, full_lookup)
-            opt_run = retriever.rerank_candidates(candidates, query_emb_by_id, opt_lookup)
+            full_run = retriever.rerank_candidates(
+                candidates,
+                query_emb_by_id,
+                full_lookup,
+                verbose=self.config.execution.verbose,
+            )
+            opt_run = retriever.rerank_candidates(
+                candidates,
+                query_emb_by_id,
+                opt_lookup,
+                verbose=self.config.execution.verbose,
+            )
 
         return {
             "full_run": full_run,
@@ -242,6 +269,7 @@ class ExperimentRunner:
                     expected_docnos=docnos,
                     expected_dimension=full_profile.dimension,
                     target_dtype=self._target_dtype_from_execution(),
+                    verbose=self.config.execution.verbose,
                 )
                 if loaded_docnos != [str(docno) for docno in docnos]:
                     raise ValueError("Loaded Hugging Face embeddings docno order does not match the current corpus.")
@@ -327,8 +355,8 @@ class ExperimentRunner:
 
         if "/" in base_repo_id:
             namespace, repo_name = base_repo_id.split("/", 1)
-            return f"{namespace}/{repo_name}--{model_slug}"
-        return f"{base_repo_id}--{model_slug}"
+            return f"{namespace}/{repo_name}_{model_slug}"
+        return f"{base_repo_id}_{model_slug}"
 
     def _target_dtype_from_execution(self) -> torch.dtype:
         return {
@@ -396,7 +424,12 @@ class ExperimentRunner:
             return utility_pairs_df, utility_table_df
 
         qid_to_position = {str(qid): i for i, qid in enumerate(topics["qid"].astype(str).tolist())}
-        for qid, group in sample_pairs.groupby("qid"):
+        grouped_pairs = list(sample_pairs.groupby("qid"))
+        for qid, group in tqdm(
+            grouped_pairs,
+            desc="Estimating per-doc utilities",
+            disable=not self.config.execution.verbose,
+        ):
             q_offset = qid_to_position[str(qid)]
             q_full = full_query_embeddings[q_offset : q_offset + 1]
             group_docnos = group["docno"].astype(str).tolist()

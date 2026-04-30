@@ -4,6 +4,7 @@ import os
 from typing import List, Sequence, Tuple
 
 import torch
+from tqdm import tqdm
 
 
 def _resolve_hf_token() -> str | None:
@@ -19,6 +20,7 @@ def load_full_embeddings_from_hf(
     expected_docnos: Sequence[str],
     expected_dimension: int,
     target_dtype: torch.dtype,
+    verbose: bool = True,
 ) -> Tuple[List[str], torch.Tensor]:
     from datasets import load_dataset
 
@@ -47,7 +49,7 @@ def load_full_embeddings_from_hf(
         )
 
     vector_by_docno = {}
-    for row in ds:
+    for row in tqdm(ds, desc="Loading HF full embeddings", disable=not verbose):
         docno = str(row[docno_column])
         if docno in vector_by_docno:
             raise ValueError(f"Duplicate docno `{docno}` found in Hugging Face embedding dataset `{repo_id}`.")

@@ -7,6 +7,7 @@ from typing import Dict, List, Tuple
 import numpy as np
 import pandas as pd
 import torch
+from tqdm import tqdm
 
 from ..models.base import EncoderAdapter, RepresentationProfile
 
@@ -36,10 +37,14 @@ class DenseGroupedRetriever:
         query_ids: List[str],
         query_embeddings_full: torch.Tensor,
         corpus: EmbeddedCorpus,
+        *,
+        verbose: bool = True,
     ) -> pd.DataFrame:
         rows = []
         query_embeddings_full = self._as_device(query_embeddings_full)
-        for q_offset, qid in enumerate(query_ids):
+        for q_offset, qid in enumerate(
+            tqdm(query_ids, desc="Dense exact retrieval", disable=not verbose)
+        ):
             q_full = query_embeddings_full[q_offset : q_offset + 1]
             all_scores_t = []
             all_docnos = []
@@ -76,12 +81,15 @@ class DenseGroupedRetriever:
         candidates: pd.DataFrame,
         query_embeddings_full: Dict[str, torch.Tensor],
         corpus_lookup: Dict[str, Tuple[str, torch.Tensor]],
+        *,
+        verbose: bool = True,
     ) -> pd.DataFrame:
         if candidates.empty:
             return pd.DataFrame(columns=["qid", "docno", "score", "rank"])
 
         rows = []
-        for qid, group in candidates.groupby("qid"):
+        grouped = list(candidates.groupby("qid"))
+        for qid, group in tqdm(grouped, desc="Dense rerank candidates", disable=not verbose):
             q_full = self._as_device(query_embeddings_full[qid])
             group = group.copy()
             group["docno"] = group["docno"].astype(str)

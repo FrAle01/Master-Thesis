@@ -54,6 +54,7 @@ class SbertMatryoshkaFinetuner:
             tevatron_negative_passages_column=cfg.data.tevatron_negative_passages_column,
             tevatron_passage_text_field=cfg.data.tevatron_passage_text_field,
             training_local_path=cfg.data.training_local_path,
+            verbose=cfg.execution.verbose,
         )
         train_ds = loader.load()
 

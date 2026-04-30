@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from tqdm import tqdm
+
 
 @dataclass
 class TripletExample:
@@ -33,6 +35,7 @@ class TrainingDatasetLoader:
         tevatron_passage_text_field: str = "text",
         training_local_path: Optional[str] = None,
         local_path: Optional[str] = None,
+        verbose: bool = True,
     ):
         self.dataset_name = dataset_name
         self.split = split
@@ -44,6 +47,7 @@ class TrainingDatasetLoader:
         self.tevatron_negative_passages_column = tevatron_negative_passages_column
         self.tevatron_passage_text_field = tevatron_passage_text_field
         self.training_local_path = training_local_path or local_path
+        self.verbose = verbose
 
     def load(self):
         if self.fmt == "hf_triplet":
@@ -94,7 +98,9 @@ class TrainingDatasetLoader:
         self._validate_required_columns(ds, required_columns, self.fmt)
 
         def generator():
-            for row_idx, row in enumerate(ds):
+            for row_idx, row in enumerate(
+                tqdm(ds, desc="Normalizing Tevatron passages", disable=not self.verbose)
+            ):
                 query = self._validate_text(row.get(self.query_column), row_idx, self.query_column, self.fmt)
                 positives = self._extract_passage_texts(
                     row=row,
