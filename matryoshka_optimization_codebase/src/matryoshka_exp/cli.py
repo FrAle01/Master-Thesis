@@ -4,12 +4,15 @@ import argparse
 
 from .config import load_config
 from .experiment import ExperimentRunner
+from .gpu_preflight import validate_cuda_runtime_or_raise
 from .training.sbert_trainer import SbertMatryoshkaFinetuner
 from .logging_utils import configure_logging
 
 
 def cmd_train(args):
     config = load_config(args.config)
+    if str(config.execution.device).strip().lower() == "cuda":
+        validate_cuda_runtime_or_raise(context="cli.train")
     logger = configure_logging(verbose=True)
     finetuner = SbertMatryoshkaFinetuner(config, logger)
     finetuner.run()
@@ -17,6 +20,12 @@ def cmd_train(args):
 
 def cmd_run(args):
     config = load_config(args.config)
+    wants_cuda = (
+        str(config.execution.device).strip().lower() == "cuda"
+        or str(config.execution.retrieval_device).strip().lower() == "cuda"
+    )
+    if wants_cuda:
+        validate_cuda_runtime_or_raise(context="cli.run")
     runner = ExperimentRunner(config)
     runner.run()
 

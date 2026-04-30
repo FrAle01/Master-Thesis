@@ -342,14 +342,20 @@ class ExperimentRunner:
         if not self.config.retrieval.use_torch_gpu_exact:
             return "cpu"
         if requested == "cuda" and not torch.cuda.is_available():
-            raise RuntimeError("execution.retrieval_device='cuda' but CUDA is not available.")
+            raise RuntimeError(
+                "execution.retrieval_device='cuda' but CUDA is not available. "
+                "Verify the pinned cu121 PyTorch installation and run the GPU preflight checks."
+            )
         return requested
 
     def _assert_retrieval_fits_vram(self, required_bytes: int, *, retrieval_device: str) -> None:
         if retrieval_device != "cuda":
             return
         if not torch.cuda.is_available():
-            raise RuntimeError("CUDA retrieval requested but CUDA is not available.")
+            raise RuntimeError(
+                "CUDA retrieval requested but CUDA is not available. "
+                "Verify the pinned cu121 PyTorch installation and run the GPU preflight checks."
+            )
 
         free_bytes, total_bytes = torch.cuda.mem_get_info()
         usable_bytes = int(total_bytes * float(self.config.execution.retrieval_vram_utilization_limit))

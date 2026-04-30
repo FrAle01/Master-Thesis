@@ -50,6 +50,29 @@ Install dependencies:
 pip install -r requirements.txt
 ```
 
+### CUDA compatibility for this VM (driver 535 / CUDA 12.2)
+
+This project is pinned for a **CUDA 12.1 PyTorch wheel set (`cu121`)** to match VMs with NVIDIA driver `535.x`.
+
+Recommended reproducible setup:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+pip install --force-reinstall --no-cache-dir --index-url https://download.pytorch.org/whl/cu121 torch==2.4.1 torchvision==0.19.1 torchaudio==2.4.1
+pip install --force-reinstall --no-cache-dir -r requirements.txt
+```
+
+Quick verification before running experiments:
+
+```bash
+nvidia-smi
+python -c "import torch; print('torch', torch.__version__); print('torch.version.cuda', torch.version.cuda); print('cuda_available', torch.cuda.is_available()); x=torch.empty(1, device='cuda'); print('device', x.device)"
+```
+
+Expected: `torch.version.cuda` reports `12.1` and `cuda_available` is `True`.
+
 ## Structure
 
 ```text
