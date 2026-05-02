@@ -205,20 +205,6 @@ class ExperimentRunner:
             ),
             retrieval_device=retrieval_device,
         )
-        full_corpus, full_lookup = materialize_grouped_corpus(
-            docnos,
-            full_doc_embeddings,
-            full_assignments,
-            profile_by_name,
-            target_device=retrieval_device,
-        )
-        opt_corpus, opt_lookup = materialize_grouped_corpus(
-            docnos,
-            full_doc_embeddings,
-            assignments,
-            profile_by_name,
-            target_device=retrieval_device,
-        )
 
         retriever = DenseGroupedRetriever(
             adapter,
@@ -231,6 +217,13 @@ class ExperimentRunner:
         query_emb_by_id = {qid: emb.unsqueeze(0) for qid, emb in zip(query_ids, full_query_embeddings)}
 
         if self.config.retrieval.mode == "dense_exact":
+            full_corpus, _ = materialize_grouped_corpus(
+                docnos,
+                full_doc_embeddings,
+                full_assignments,
+                profile_by_name,
+                target_device=retrieval_device,
+            )
             full_run = retriever.search_exact(
                 query_ids,
                 full_query_embeddings,
@@ -239,15 +232,36 @@ class ExperimentRunner:
             )
             if self.config.execution.save_runs:
                 save_df(full_run, self.output_dir / "full_run.parquet")
+            del full_corpus
+            if retrieval_device == "cuda" and torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+            opt_corpus, _ = materialize_grouped_corpus(
+                docnos,
+                full_doc_embeddings,
+                assignments,
+                profile_by_name,
+                target_device=retrieval_device,
+            )
             opt_run = retriever.search_exact(
                 query_ids,
                 full_query_embeddings,
                 opt_corpus,
                 verbose=self.config.execution.verbose,
             )
+            del opt_corpus
+            if retrieval_device == "cuda" and torch.cuda.is_available():
+                torch.cuda.empty_cache()
         else:
             candidates = loader.build_bm25_candidates(self.config.retrieval, topics)
             save_df(candidates, self.output_dir / "bm25_candidates.parquet")
+            _, full_lookup = materialize_grouped_corpus(
+                docnos,
+                full_doc_embeddings,
+                full_assignments,
+                profile_by_name,
+                target_device=retrieval_device,
+            )
             full_run = retriever.rerank_candidates(
                 candidates,
                 query_emb_by_id,
@@ -256,12 +270,26 @@ class ExperimentRunner:
             )
             if self.config.execution.save_runs:
                 save_df(full_run, self.output_dir / "full_run.parquet")
+            del full_lookup
+            if retrieval_device == "cuda" and torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+            _, opt_lookup = materialize_grouped_corpus(
+                docnos,
+                full_doc_embeddings,
+                assignments,
+                profile_by_name,
+                target_device=retrieval_device,
+            )
             opt_run = retriever.rerank_candidates(
                 candidates,
                 query_emb_by_id,
                 opt_lookup,
                 verbose=self.config.execution.verbose,
             )
+            del opt_lookup
+            if retrieval_device == "cuda" and torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
         return {
             "full_run": full_run,

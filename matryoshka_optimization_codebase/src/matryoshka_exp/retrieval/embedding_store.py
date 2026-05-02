@@ -175,23 +175,36 @@ def save_full_embeddings_to_hf(
     docno_column: str,
     vector_column: str,
 ) -> None:
-    from datasets import Dataset
+    from datasets import Dataset, Features, Sequence, Value
 
     if len(docnos) != int(embeddings.shape[0]):
         raise ValueError(
             f"Cannot save embeddings: docnos count ({len(docnos)}) does not match embeddings rows ({embeddings.shape[0]})."
         )
 
-    vectors = embeddings.detach().cpu().to(torch.float32).tolist()
-    ds = Dataset.from_dict(
+    # Keep memory usage bounded: avoid materializing a giant Python list via `.tolist()` on the full tensor.
+    embeddings_cpu = embeddings.detach().cpu().to(torch.float32)
+    docnos_str = [str(docno) for docno in docnos]
+    features = Features(
         {
-            docno_column: [str(docno) for docno in docnos],
-            vector_column: vectors,
+            docno_column: Value("string"),
+            vector_column: Sequence(Value("float32"), length=int(embeddings_cpu.shape[1])),
         }
     )
+
+    def _row_generator():
+        for i, docno in enumerate(docnos_str):
+            yield {
+                docno_column: docno,
+                vector_column: embeddings_cpu[i].tolist(),
+            }
+
+    ds = Dataset.from_generator(_row_generator, features=features)
 
     push_kwargs = {"repo_id": repo_id, "split": split}
     token = _resolve_hf_token()
     if token:
         push_kwargs["token"] = token
+    # Smaller shards reduce peak RAM during Arrow serialization and upload.
+    push_kwargs["max_shard_size"] = "500MB"
     ds.push_to_hub(**push_kwargs)
