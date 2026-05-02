@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import asdict
 import hashlib
+from pathlib import Path
 import re
 from typing import Dict
 
@@ -73,6 +74,7 @@ class ExperimentRunner:
             prompt_name="query",
             batch_size=self.config.execution.query_batch_size,
         )
+        self._save_query_embeddings_checkpoint(query_ids, full_query_embeddings)
         self._sync_profile_costs_with_observed_dtype(profiles, full_query_embeddings, stage="query encoding")
         payload = self._run_batch(loader, adapter, profiles, profile_by_name, full_profile, topics, qrels, full_query_embeddings)
 
@@ -151,6 +153,9 @@ class ExperimentRunner:
             subset_doc_embeddings=full_doc_embeddings,
             full_query_embeddings=full_query_embeddings,
         )
+        if self.config.execution.save_score_pairs:
+            save_df(utility_pairs_df, self.output_dir / "sampled_score_pairs.parquet")
+        save_df(utility_table_df, self.output_dir / "per_document_utility.parquet")
 
         optimizer = LagrangianProfileOptimizer(
             profiles=profiles,
@@ -162,6 +167,15 @@ class ExperimentRunner:
         )
         opt_result = optimizer.solve(utility_table_df)
         assignments = opt_result.assignments
+        save_df(assignments, self.output_dir / "assignments.parquet")
+        save_json(
+            {
+                "lambda_star": opt_result.lambda_star,
+                "feasible": bool(opt_result.feasible),
+                "total_utility": float(opt_result.total_utility),
+            },
+            self.output_dir / "optimization_result.json",
+        )
 
         if not opt_result.feasible:
             budget = self.config.budget_bytes_resolved()
@@ -223,6 +237,8 @@ class ExperimentRunner:
                 full_corpus,
                 verbose=self.config.execution.verbose,
             )
+            if self.config.execution.save_runs:
+                save_df(full_run, self.output_dir / "full_run.parquet")
             opt_run = retriever.search_exact(
                 query_ids,
                 full_query_embeddings,
@@ -238,6 +254,8 @@ class ExperimentRunner:
                 full_lookup,
                 verbose=self.config.execution.verbose,
             )
+            if self.config.execution.save_runs:
+                save_df(full_run, self.output_dir / "full_run.parquet")
             opt_run = retriever.rerank_candidates(
                 candidates,
                 query_emb_by_id,
@@ -261,6 +279,13 @@ class ExperimentRunner:
 
         if source in {"auto", "hf_dataset"}:
             try:
+                hf_checkpoint_cfg = self._embedding_checkpoint_cfg(
+                    stage="hf_load",
+                    full_profile=full_profile,
+                    source="hf_dataset",
+                    repo_id=target_repo_id,
+                    split=self.config.data.hf_embeddings_split,
+                )
                 loaded_docnos, loaded_embeddings = load_full_embeddings_from_hf(
                     repo_id=target_repo_id,
                     split=self.config.data.hf_embeddings_split,
@@ -270,6 +295,7 @@ class ExperimentRunner:
                     expected_dimension=full_profile.dimension,
                     target_dtype=self._target_dtype_from_execution(),
                     verbose=self.config.execution.verbose,
+                    checkpoint_cfg=hf_checkpoint_cfg,
                 )
                 if loaded_docnos != [str(docno) for docno in docnos]:
                     raise ValueError("Loaded Hugging Face embeddings docno order does not match the current corpus.")
@@ -290,6 +316,13 @@ class ExperimentRunner:
                     exc,
                 )
 
+        compute_checkpoint_cfg = self._embedding_checkpoint_cfg(
+            stage="compute",
+            full_profile=full_profile,
+            source="compute",
+            repo_id=target_repo_id,
+            split=self.config.data.hf_embeddings_split,
+        )
         _docnos, computed_embeddings, _ = encode_full_corpus(
             iter(corpus_records),
             adapter,
@@ -297,6 +330,7 @@ class ExperimentRunner:
             batch_size=self.config.execution.doc_batch_size,
             prompt_name="document",
             verbose=self.config.execution.verbose,
+            checkpoint_cfg=compute_checkpoint_cfg,
         )
 
         if target_repo_id:
@@ -328,6 +362,46 @@ class ExperimentRunner:
             )
 
         return computed_embeddings
+
+    def _save_query_embeddings_checkpoint(self, query_ids, query_embeddings: torch.Tensor) -> None:
+        torch.save(query_embeddings.detach().cpu(), self.output_dir / "query_embeddings.pt")
+        save_json({"query_ids": [str(qid) for qid in query_ids]}, self.output_dir / "query_ids.json")
+
+    def _embedding_checkpoint_cfg(
+        self,
+        *,
+        stage: str,
+        full_profile,
+        source: str,
+        repo_id: str | None,
+        split: str,
+    ) -> dict | None:
+        if not self.config.execution.embedding_checkpoint_enabled:
+            return None
+        base_dir = (
+            Path(self.config.execution.embedding_checkpoint_dir)
+            if self.config.execution.embedding_checkpoint_dir
+            else (self.output_dir / "embedding_checkpoints")
+        )
+        stage_dir = base_dir / stage
+        stage_dir.mkdir(parents=True, exist_ok=True)
+        return {
+            "every_docs": int(self.config.execution.embedding_checkpoint_every_docs),
+            "resume_mode": str(self.config.execution.embedding_checkpoint_resume),
+            "chunk_dir": str(stage_dir / "chunks"),
+            "manifest_path": str(stage_dir / "manifest.json"),
+            "dtype": self._target_dtype_from_execution(),
+            "context": {
+                "stage": stage,
+                "source": source,
+                "repo_id": str(repo_id or ""),
+                "split": str(split),
+                "dimension": int(full_profile.dimension),
+                "model_name_or_path": str(self.config.model.model_name_or_path),
+                "adapter_type": str(self.config.model.adapter_type or ""),
+                "adapter_name": str(self.config.model.adapter_name),
+            },
+        }
 
     def _resolve_model_specific_embeddings_repo_id(self) -> str | None:
         base_repo_id = self.config.data.hf_embeddings_repo_id

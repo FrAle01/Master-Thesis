@@ -110,6 +110,8 @@ class TrainingConfig:
     save_steps: int = 1000
     eval_steps: int = 1000
     logging_steps: int = 50
+    resume_from_checkpoint: Optional[str] = None
+    auto_resume_from_last_checkpoint: bool = False
     lora: LoraTrainingConfig = field(default_factory=LoraTrainingConfig)
 
 
@@ -165,6 +167,10 @@ class ExecutionConfig:
     save_runs: bool = True
     verbose: bool = True
     retrieval_vram_utilization_limit: float = 0.9
+    embedding_checkpoint_enabled: bool = True
+    embedding_checkpoint_every_docs: int = 1_000_000
+    embedding_checkpoint_dir: Optional[str] = None
+    embedding_checkpoint_resume: str = "auto"
 
 
 @dataclass
@@ -273,6 +279,7 @@ def _validate_config(cfg: ExperimentConfig) -> None:
             "Use `optimization.mode=batch`."
         )
     _validate_choice("execution.retrieval_device", cfg.execution.retrieval_device, {"cuda", "cpu"})
+    _validate_choice("execution.embedding_checkpoint_resume", cfg.execution.embedding_checkpoint_resume, {"auto", "restart", "fail"})
     _validate_choice("retrieval.mode", cfg.retrieval.mode, {"dense_exact", "pyterrier_candidates"})
     _validate_choice(
         "utility.metric",
@@ -303,6 +310,8 @@ def _validate_config(cfg: ExperimentConfig) -> None:
         raise ValueError("`retrieval.top_k` must be > 0.")
     if cfg.utility.margin_negatives <= 0:
         raise ValueError("`utility.margin_negatives` must be > 0.")
+    if cfg.execution.embedding_checkpoint_every_docs <= 0:
+        raise ValueError("`execution.embedding_checkpoint_every_docs` must be > 0.")
     _validate_choice("utility.aggregate", cfg.utility.aggregate, {"mean"})
 
     if cfg.data.pyterrier_dataset is None:

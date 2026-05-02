@@ -109,7 +109,12 @@ class SbertMatryoshkaFinetuner:
             loss=train_loss,
         )
         self.logger.info("Starting Sentence Transformers fine-tuning with strategy `%s`.", finetune_strategy)
-        trainer.train()
+        resume_checkpoint = self._resolve_resume_checkpoint(tcfg.output_model_dir)
+        if resume_checkpoint:
+            self.logger.info("Resuming fine-tuning from checkpoint: %s", resume_checkpoint)
+            trainer.train(resume_from_checkpoint=resume_checkpoint)
+        else:
+            trainer.train()
         if finetune_strategy == "lora":
             adapter_path = save_lora_adapter(
                 model,
@@ -126,3 +131,18 @@ class SbertMatryoshkaFinetuner:
         trainer.save_model(tcfg.output_model_dir)
         self.logger.info("Saved fine-tuned model to %s", tcfg.output_model_dir)
         return Path(tcfg.output_model_dir)
+
+    def _resolve_resume_checkpoint(self, output_dir: str) -> str | None:
+        tcfg = self.config.training
+        if tcfg.resume_from_checkpoint:
+            return str(tcfg.resume_from_checkpoint)
+        if not tcfg.auto_resume_from_last_checkpoint:
+            return None
+        root = Path(output_dir)
+        if not root.exists():
+            return None
+        candidates = [p for p in root.glob("checkpoint-*") if p.is_dir()]
+        if not candidates:
+            return None
+        candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        return str(candidates[0])

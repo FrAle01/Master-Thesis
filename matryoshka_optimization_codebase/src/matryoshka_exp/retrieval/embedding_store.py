@@ -1,10 +1,19 @@
 from __future__ import annotations
 
 import os
-from typing import List, Sequence, Tuple
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import torch
 from tqdm import tqdm
+from .checkpointing import (
+    atomic_write_docnos,
+    atomic_write_json,
+    collect_valid_chunks,
+    load_manifest,
+    load_tensor_from_chunks,
+    manifest_matches_context,
+)
 
 
 def _resolve_hf_token() -> str | None:
@@ -21,6 +30,7 @@ def load_full_embeddings_from_hf(
     expected_dimension: int,
     target_dtype: torch.dtype,
     verbose: bool = True,
+    checkpoint_cfg: Optional[Dict[str, Any]] = None,
 ) -> Tuple[List[str], torch.Tensor]:
     from datasets import load_dataset
 
@@ -48,8 +58,70 @@ def load_full_embeddings_from_hf(
             f"Hugging Face embedding dataset `{repo_id}` split `{split}` is missing columns: {missing_columns}"
         )
 
+    chunk_doc_target = int((checkpoint_cfg or {}).get("every_docs", 0))
+    chunk_dir = Path((checkpoint_cfg or {}).get("chunk_dir", "")) if checkpoint_cfg else None
+    manifest_path = Path((checkpoint_cfg or {}).get("manifest_path", "")) if checkpoint_cfg else None
+    resume_mode = str((checkpoint_cfg or {}).get("resume_mode", "auto"))
+    context = dict((checkpoint_cfg or {}).get("context", {}))
+    num_rows_loaded = 0
     vector_by_docno = {}
-    for row in tqdm(ds, desc="Loading HF full embeddings", disable=not verbose):
+
+    if checkpoint_cfg and chunk_doc_target > 0 and chunk_dir is not None and manifest_path is not None:
+        chunk_dir.mkdir(parents=True, exist_ok=True)
+        manifest = load_manifest(manifest_path)
+        if manifest and not manifest_matches_context(manifest, context):
+            if resume_mode == "fail":
+                raise ValueError("HF embedding checkpoint manifest does not match current context.")
+            if resume_mode == "restart":
+                manifest = None
+        if manifest:
+            valid_chunks = collect_valid_chunks(chunk_dir, expected_dimension, target_dtype)
+            contiguous = []
+            expected_idx = 0
+            for chunk in valid_chunks:
+                if chunk[0] != expected_idx:
+                    break
+                contiguous.append(chunk)
+                expected_idx += 1
+            loaded_docnos, loaded_tensor = load_tensor_from_chunks(
+                chunk_dir, contiguous, expected_dimension, target_dtype
+            )
+            for d, emb in zip(loaded_docnos, loaded_tensor):
+                vector_by_docno[str(d)] = emb.to(torch.float32).tolist()
+            num_rows_loaded = int(manifest.get("num_rows_loaded", len(loaded_docnos)))
+            if num_rows_loaded < len(loaded_docnos):
+                num_rows_loaded = len(loaded_docnos)
+
+    chunk_buffer_docnos: List[str] = []
+    chunk_buffer_vectors: List[torch.Tensor] = []
+    next_chunk_idx = len(collect_valid_chunks(chunk_dir, expected_dimension, target_dtype)) if checkpoint_cfg and chunk_dir else 0
+
+    def flush_checkpoint_chunk() -> None:
+        nonlocal chunk_buffer_docnos, chunk_buffer_vectors, next_chunk_idx
+        if not checkpoint_cfg or not chunk_buffer_docnos or chunk_dir is None or manifest_path is None:
+            return
+        emb_tensor = torch.stack(chunk_buffer_vectors, dim=0).to(target_dtype)
+        emb_path = chunk_dir / f"chunk_{next_chunk_idx:06d}.pt"
+        docno_path = chunk_dir / f"chunk_{next_chunk_idx:06d}.docnos.txt"
+        torch.save(emb_tensor, emb_path)
+        atomic_write_docnos(chunk_buffer_docnos, docno_path)
+        atomic_write_json(
+            {
+                **context,
+                "num_rows_loaded": num_rows_loaded,
+                "next_chunk_idx": next_chunk_idx + 1,
+                "dimension": int(expected_dimension),
+                "dtype": str(target_dtype),
+            },
+            manifest_path,
+        )
+        next_chunk_idx += 1
+        chunk_buffer_docnos = []
+        chunk_buffer_vectors = []
+
+    for idx, row in enumerate(tqdm(ds, desc="Loading HF full embeddings", disable=not verbose)):
+        if idx < num_rows_loaded:
+            continue
         docno = str(row[docno_column])
         if docno in vector_by_docno:
             raise ValueError(f"Duplicate docno `{docno}` found in Hugging Face embedding dataset `{repo_id}`.")
@@ -62,7 +134,15 @@ def load_full_embeddings_from_hf(
             raise ValueError(
                 f"Embedding size mismatch for docno `{docno}`: expected {expected_dimension}, got {len(vector)}."
             )
-        vector_by_docno[docno] = [float(v) for v in vector]
+        vector_f = [float(v) for v in vector]
+        vector_by_docno[docno] = vector_f
+        num_rows_loaded += 1
+        if checkpoint_cfg and chunk_doc_target > 0:
+            chunk_buffer_docnos.append(docno)
+            chunk_buffer_vectors.append(torch.tensor(vector_f, dtype=torch.float32))
+            if len(chunk_buffer_docnos) >= chunk_doc_target:
+                flush_checkpoint_chunk()
+    flush_checkpoint_chunk()
 
     aligned_vectors = []
     missing_docnos = []
