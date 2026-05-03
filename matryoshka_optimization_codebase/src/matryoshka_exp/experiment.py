@@ -320,6 +320,11 @@ class ExperimentRunner:
                 repo_id=target_repo_id,
                 split=self.config.data.hf_embeddings_split,
             )
+            self.logger.info(
+                "Checked for local `%s` checkpoints for full document embeddings. Found valid checkpoint: %s",
+                local_stage,
+                "yes" if local_embeddings is not None else "no",
+            )
             if local_embeddings is not None:
                 self.logger.info(
                     "Recovered %s full document embeddings from local `%s` checkpoints.",
@@ -431,6 +436,7 @@ class ExperimentRunner:
             split=split,
         )
         if not checkpoint_cfg:
+            self.logger.info("Local embedding checkpointing is disabled for stage `%s`.", stage)
             return None
 
         chunk_dir = Path(checkpoint_cfg["chunk_dir"])
@@ -441,6 +447,16 @@ class ExperimentRunner:
 
         manifest = load_manifest(manifest_path)
         if not manifest or not manifest_matches_context(manifest, context):
+            if not manifest:
+                self.logger.info("No manifest found at %s for local `%s` checkpoints.", manifest_path, stage)
+            else:
+                self.logger.warning(
+                    "Manifest context mismatch for local `%s` checkpoints at %s. Expected context: %s, manifest context: %s. Ignoring checkpoint.",
+                    stage,
+                    manifest_path,
+                    context,
+                    manifest.get("context", {}),
+                )
             return None
 
         valid_chunks = collect_valid_chunks(chunk_dir, expected_dim, expected_dtype)
@@ -450,18 +466,47 @@ class ExperimentRunner:
                 break
             contiguous.append(chunk)
         if not contiguous:
+            self.logger.info("No valid contiguous chunk sequence found in %s for local `%s` checkpoints.", chunk_dir, stage)
             return None
 
         loaded_docnos, loaded_tensor = load_tensor_from_chunks(chunk_dir, contiguous, expected_dim, expected_dtype)
         if len(loaded_docnos) != len(expected_docnos):
+            self.logger.warning(
+                "Loaded docnos length mismatch for local `%s` checkpoints at %s. Expected %s docnos, got %s docnos. Ignoring checkpoint.",
+                stage,
+                manifest_path,
+                len(expected_docnos),
+                len(loaded_docnos),
+            )
             return None
         if [str(d) for d in loaded_docnos] != [str(d) for d in expected_docnos]:
+            self.logger.warning(
+                "Loaded docnos content mismatch for local `%s` checkpoints at %s. Ignoring checkpoint.",
+                stage,
+                manifest_path,
+            )
             return None
         if int(loaded_tensor.shape[0]) != len(expected_docnos):
+            self.logger.warning(
+                "Loaded tensor shape mismatch for local `%s` checkpoints at %s. Ignoring checkpoint.",
+                stage,
+                manifest_path,
+            )
             return None
+        
+        if stage == "hf_load":
+            num_rows_in_checkpoints = int(manifest.get("num_rows_loaded", 0))
+        if stage == "compute":
+            num_rows_in_checkpoints = int(manifest.get("num_docs_done", 0))
 
-        num_rows_loaded = int(manifest.get("num_rows_loaded", 0))
-        if num_rows_loaded < len(expected_docnos):
+        if num_rows_in_checkpoints < len(expected_docnos):
+            self.logger.warning(
+                "Loaded tensor incomplete for local `%s` checkpoints at %s. Manifest indicates only %s rows loaded, but expected %s rows. Ignoring checkpoint.",
+                stage,
+                manifest_path,
+                num_rows_in_checkpoints,
+                len(expected_docnos),
+            )
             return None
 
         return loaded_tensor.to(expected_dtype)
@@ -657,7 +702,7 @@ class ExperimentRunner:
             for profile in profiles:
                 values = per_doc_profile_utilities.get((docno, profile.name), [])
                 if values:
-                    agg = float(np.mean(values))
+                    agg = float(np.sum(values))
                 else:
                     agg = 1.0 if profile.name == full_profile.name else 0.0
                 aggregated_rows.append({"docno": docno, "profile": profile.name, "utility": agg})
@@ -767,15 +812,18 @@ class ExperimentRunner:
             positives = [d for d in positives if d in subset_docno_set]
             if not positives:
                 continue
+            self.logger.info("For qid %s, found %s positive docnos in subset.", qid, len(positives))
             positive_set = set(positives)
             negative_pool = [d for d in subset_docnos if d not in positive_set]
             n_neg = max(0, max_pairs - len(positives))
+            self.logger.info("For qid %s, sampling up to %s negatives from pool of %s candidates.", qid, n_neg, len(negative_pool))
             if n_neg > 0 and negative_pool:
                 take = min(n_neg, len(negative_pool))
                 negatives = [str(x) for x in rng.choice(negative_pool, size=take, replace=False)]
             else:
                 negatives = []
             selected = (positives + negatives)[:max_pairs]
+            self.logger.info("For qid %s, selected %s docnos for utility estimation.", qid, len(selected))
             for docno in selected:
                 sampled.append({"qid": qid, "docno": docno})
         return pd.DataFrame(sampled, columns=["qid", "docno"])
