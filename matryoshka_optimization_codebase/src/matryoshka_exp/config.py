@@ -31,6 +31,7 @@ class DataConfig:
     local_corpus_path: Optional[str] = None
     local_topics_path: Optional[str] = None
     local_qrels_path: Optional[str] = None
+    qrels_label_column: str = "label"
     training_dataset_name: Optional[str] = None
     training_local_path: Optional[str] = None
     training_split: str = "train"
@@ -123,6 +124,7 @@ class UtilityConfig:
     margin_negatives: int = 4
     aggregate: str = "mean"
     sample_pairs_per_query: int = 64
+    relevance_threshold: float = 0.0
     seed: int = 13
 
 
@@ -310,6 +312,8 @@ def _validate_config(cfg: ExperimentConfig) -> None:
         raise ValueError("`retrieval.top_k` must be > 0.")
     if cfg.utility.margin_negatives <= 0:
         raise ValueError("`utility.margin_negatives` must be > 0.")
+    if cfg.utility.sample_pairs_per_query == 0 or cfg.utility.sample_pairs_per_query < -1:
+        raise ValueError("`utility.sample_pairs_per_query` must be -1 (unlimited) or > 0.")
     if cfg.execution.embedding_checkpoint_every_docs <= 0:
         raise ValueError("`execution.embedding_checkpoint_every_docs` must be > 0.")
     _validate_choice("utility.aggregate", cfg.utility.aggregate, {"mean"})

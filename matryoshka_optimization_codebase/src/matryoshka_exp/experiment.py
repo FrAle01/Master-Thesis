@@ -630,7 +630,8 @@ class ExperimentRunner:
         full_query_embeddings,
     ):
         doc_index = {docno: i for i, docno in enumerate(subset_docnos)}
-        sample_pairs = self._build_score_sampling_frame(topics, qrels, subset_docnos)
+        qrels_views = self._prepare_qrels_views(qrels)
+        sample_pairs = self._build_score_sampling_frame(topics, qrels_views, subset_docnos)
         sample_columns = ["qid", "docno", "profile", "full_score", "reduced_score", "utility"]
         sampled_rows = []
         per_doc_profile_utilities = defaultdict(list)
@@ -659,7 +660,7 @@ class ExperimentRunner:
             doc_full = subset_doc_embeddings[group_indices]
             full_scores = adapter.similarity(q_full, doc_full).squeeze(0)
 
-            neg_docnos = self._sample_margin_negatives(str(qid), qrels, subset_docnos, group_docnos)
+            neg_docnos = self._sample_margin_negatives(str(qid), qrels_views, subset_docnos, group_docnos)
             neg_indices = [doc_index[d] for d in neg_docnos if d in doc_index]
             neg_scores_full = None
             if neg_indices:
@@ -781,9 +782,9 @@ class ExperimentRunner:
 
         raise ValueError(f"Unsupported utility metric: {metric}")
 
-    def _sample_margin_negatives(self, qid: str, qrels: pd.DataFrame, subset_docnos, positive_docnos):
-        qrels_q = qrels[qrels["qid"].astype(str) == str(qid)]
-        positive_set = set(qrels_q["docno"].astype(str).tolist())
+    def _sample_margin_negatives(self, qid: str, qrels_views, subset_docnos, positive_docnos):
+        qid = str(qid)
+        positive_set = set(qrels_views["positive_by_qid"].get(qid, set()))
         positive_set.update([str(d) for d in positive_docnos])
         pool = [str(d) for d in subset_docnos if str(d) not in positive_set]
         if not pool:
@@ -797,36 +798,82 @@ class ExperimentRunner:
         picks = rng.choice(pool, size=n, replace=False)
         return [str(x) for x in picks]
 
-    def _build_score_sampling_frame(self, topics, qrels, subset_docnos):
+    def _build_score_sampling_frame(self, topics, qrels_views, subset_docnos):
         subset_docnos = [str(d) for d in subset_docnos]
         max_pairs = self.config.utility.sample_pairs_per_query
-        qrels = qrels.copy()
-        qrels["qid"] = qrels["qid"].astype(str)
-        qrels["docno"] = qrels["docno"].astype(str)
 
         subset_docno_set = set(subset_docnos)
         rng = np.random.default_rng(int(self.config.utility.seed))
         sampled = []
         for qid in topics["qid"].astype(str).tolist():
-            positives = qrels[qrels["qid"] == qid]["docno"].tolist()
-            positives = [d for d in positives if d in subset_docno_set]
+            positives = [d for d in qrels_views["positive_by_qid"].get(qid, set()) if d in subset_docno_set]
             if not positives:
                 continue
             self.logger.info("For qid %s, found %s positive docnos in subset.", qid, len(positives))
             positive_set = set(positives)
-            negative_pool = [d for d in subset_docnos if d not in positive_set]
-            n_neg = max(0, max_pairs - len(positives))
-            self.logger.info("For qid %s, sampling up to %s negatives from pool of %s candidates.", qid, n_neg, len(negative_pool))
-            if n_neg > 0 and negative_pool:
-                take = min(n_neg, len(negative_pool))
-                negatives = [str(x) for x in rng.choice(negative_pool, size=take, replace=False)]
+            if max_pairs == -1:
+                selected = positives
             else:
-                negatives = []
-            selected = (positives + negatives)[:max_pairs]
+                if len(positives) >= max_pairs:
+                    selected = [str(x) for x in rng.choice(positives, size=max_pairs, replace=False)]
+                else:
+                    qrel_zero_set = qrels_views["zero_by_qid"].get(qid, set())
+                    qrel_docno_set = qrels_views["all_by_qid"].get(qid, set())
+                    negative_pool = [
+                        d for d in subset_docnos
+                        if (d in qrel_zero_set or d not in qrel_docno_set) and d not in positive_set
+                    ]
+                    n_neg = max(0, max_pairs - len(positives))
+                    self.logger.info(
+                        "For qid %s, sampling up to %s negatives from pool of %s candidates.",
+                        qid,
+                        n_neg,
+                        len(negative_pool),
+                    )
+                    if n_neg > 0 and negative_pool:
+                        take = min(n_neg, len(negative_pool))
+                        negatives = [str(x) for x in rng.choice(negative_pool, size=take, replace=False)]
+                    else:
+                        negatives = []
+                    selected = positives + negatives
             self.logger.info("For qid %s, selected %s docnos for utility estimation.", qid, len(selected))
             for docno in selected:
                 sampled.append({"qid": qid, "docno": docno})
         return pd.DataFrame(sampled, columns=["qid", "docno"])
+
+    def _prepare_qrels_views(self, qrels: pd.DataFrame):
+        qrels_slim = qrels.loc[:, ["qid", "docno", self._resolve_qrels_label_column(qrels)]].copy()
+        qrels_slim["qid"] = qrels_slim["qid"].astype(str)
+        qrels_slim["docno"] = qrels_slim["docno"].astype(str)
+        label_col = self._resolve_qrels_label_column(qrels_slim)
+        qrels_slim[label_col] = pd.to_numeric(qrels_slim[label_col], errors="coerce")
+        if qrels_slim[label_col].isna().any():
+            raise ValueError(f"Qrels column `{label_col}` contains non-numeric relevance labels.")
+
+        threshold = float(self.config.utility.relevance_threshold)
+        positive_by_qid = {}
+        zero_by_qid = {}
+        all_by_qid = {}
+        for qid, group in qrels_slim.groupby("qid", sort=False):
+            docs = group["docno"].tolist()
+            labels = group[label_col].to_numpy()
+            all_by_qid[qid] = set(docs)
+            positive_by_qid[qid] = {doc for doc, lab in zip(docs, labels) if lab >= threshold}
+            zero_by_qid[qid] = {doc for doc, lab in zip(docs, labels) if lab == 0}
+
+        return {
+            "positive_by_qid": positive_by_qid,
+            "zero_by_qid": zero_by_qid,
+            "all_by_qid": all_by_qid,
+        }
+
+    def _resolve_qrels_label_column(self, qrels: pd.DataFrame) -> str:
+        column = str(self.config.data.qrels_label_column)
+        if column not in qrels.columns:
+            raise ValueError(
+                f"Qrels label column `{column}` not found. Available columns: {sorted(qrels.columns.tolist())}"
+            )
+        return column
 
     def _sync_profile_costs_with_observed_dtype(self, profiles, embeddings: torch.Tensor, *, stage: str) -> None:
         if embeddings.numel() == 0:
