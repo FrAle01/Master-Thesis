@@ -19,6 +19,12 @@ from .models.factory import create_encoder
 from .optimization.errors import InfeasibleOptimizationError
 from .optimization.lagrangian import LagrangianProfileOptimizer
 from .retrieval.dense import DenseGroupedRetriever
+from .retrieval.checkpointing import (
+    collect_valid_chunks,
+    load_manifest,
+    load_tensor_from_chunks,
+    manifest_matches_context,
+)
 from .retrieval.embedding_store import load_full_embeddings_from_hf, save_full_embeddings_to_hf
 from .retrieval.materialization import encode_full_corpus, materialize_grouped_corpus
 from .results.persistence import ensure_dir, save_df, save_json
@@ -304,6 +310,23 @@ class ExperimentRunner:
     def _load_or_compute_full_doc_embeddings(self, *, adapter, full_profile, docnos, corpus_records):
         source = self.config.data.full_embeddings_source
         target_repo_id = self._resolve_model_specific_embeddings_repo_id()
+        expected_docnos = [str(docno) for docno in docnos]
+
+        for local_stage in ("compute", "hf_load"):
+            local_embeddings = self._try_load_full_doc_embeddings_from_local_checkpoint(
+                stage=local_stage,
+                full_profile=full_profile,
+                expected_docnos=expected_docnos,
+                repo_id=target_repo_id,
+                split=self.config.data.hf_embeddings_split,
+            )
+            if local_embeddings is not None:
+                self.logger.info(
+                    "Recovered %s full document embeddings from local `%s` checkpoints.",
+                    len(expected_docnos),
+                    local_stage,
+                )
+                return local_embeddings
 
         if source in {"auto", "hf_dataset"}:
             try:
@@ -325,7 +348,7 @@ class ExperimentRunner:
                     verbose=self.config.execution.verbose,
                     checkpoint_cfg=hf_checkpoint_cfg,
                 )
-                if loaded_docnos != [str(docno) for docno in docnos]:
+                if loaded_docnos != expected_docnos:
                     raise ValueError("Loaded Hugging Face embeddings docno order does not match the current corpus.")
                 self.logger.info(
                     "Loaded %s full document embeddings from Hugging Face dataset `%s` (split `%s`).",
@@ -390,6 +413,58 @@ class ExperimentRunner:
             )
 
         return computed_embeddings
+
+    def _try_load_full_doc_embeddings_from_local_checkpoint(
+        self,
+        *,
+        stage: str,
+        full_profile,
+        expected_docnos,
+        repo_id: str | None,
+        split: str,
+    ) -> torch.Tensor | None:
+        checkpoint_cfg = self._embedding_checkpoint_cfg(
+            stage=stage,
+            full_profile=full_profile,
+            source="hf_dataset" if stage == "hf_load" else "compute",
+            repo_id=repo_id,
+            split=split,
+        )
+        if not checkpoint_cfg:
+            return None
+
+        chunk_dir = Path(checkpoint_cfg["chunk_dir"])
+        manifest_path = Path(checkpoint_cfg["manifest_path"])
+        context = dict(checkpoint_cfg.get("context", {}))
+        expected_dtype = checkpoint_cfg["dtype"]
+        expected_dim = int(full_profile.dimension)
+
+        manifest = load_manifest(manifest_path)
+        if not manifest or not manifest_matches_context(manifest, context):
+            return None
+
+        valid_chunks = collect_valid_chunks(chunk_dir, expected_dim, expected_dtype)
+        contiguous = []
+        for idx, chunk in enumerate(valid_chunks):
+            if chunk[0] != idx:
+                break
+            contiguous.append(chunk)
+        if not contiguous:
+            return None
+
+        loaded_docnos, loaded_tensor = load_tensor_from_chunks(chunk_dir, contiguous, expected_dim, expected_dtype)
+        if len(loaded_docnos) != len(expected_docnos):
+            return None
+        if [str(d) for d in loaded_docnos] != [str(d) for d in expected_docnos]:
+            return None
+        if int(loaded_tensor.shape[0]) != len(expected_docnos):
+            return None
+
+        num_rows_loaded = int(manifest.get("num_rows_loaded", 0))
+        if num_rows_loaded < len(expected_docnos):
+            return None
+
+        return loaded_tensor.to(expected_dtype)
 
     def _save_query_embeddings_checkpoint(self, query_ids, query_embeddings: torch.Tensor) -> None:
         torch.save(query_embeddings.detach().cpu(), self.output_dir / "query_embeddings.pt")
