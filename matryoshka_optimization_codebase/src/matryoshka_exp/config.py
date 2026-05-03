@@ -124,7 +124,7 @@ class UtilityConfig:
     margin_negatives: int = 4
     aggregate: str = "mean"
     sample_pairs_per_query: int = 64
-    relevance_threshold: float = 0.0
+    relevance_threshold: float = 1.0
     seed: int = 13
 
 
