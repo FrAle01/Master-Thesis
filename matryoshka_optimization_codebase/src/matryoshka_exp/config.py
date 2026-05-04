@@ -90,6 +90,17 @@ class LoraTrainingConfig:
 
 
 @dataclass
+class HubTrainingConfig:
+    enabled: bool = False
+    repo_prefix: str = ""
+    private: bool = True
+    token_env: str = "HF_TOKEN"
+    auto_repo_from_experiment: bool = True
+    repo_suffix_full: str = "finetuned-model"
+    repo_suffix_lora: str = "lora-adapter"
+
+
+@dataclass
 class TrainingConfig:
     enabled: bool = False
     finetune_strategy: str = "full"
@@ -114,6 +125,7 @@ class TrainingConfig:
     resume_from_checkpoint: Optional[str] = None
     auto_resume_from_last_checkpoint: bool = False
     lora: LoraTrainingConfig = field(default_factory=LoraTrainingConfig)
+    hub: HubTrainingConfig = field(default_factory=HubTrainingConfig)
 
 
 @dataclass
@@ -205,9 +217,11 @@ def _construct_dataclass(cls, payload: Optional[Dict[str, Any]]):
 def _construct_training_config(payload: Optional[Dict[str, Any]]) -> TrainingConfig:
     payload = dict(payload or {})
     lora_payload = payload.pop("lora", {})
+    hub_payload = payload.pop("hub", {})
     return TrainingConfig(
         **payload,
         lora=_construct_dataclass(LoraTrainingConfig, lora_payload),
+        hub=_construct_dataclass(HubTrainingConfig, hub_payload),
     )
 
 
@@ -340,6 +354,11 @@ def _validate_config(cfg: ExperimentConfig) -> None:
                 "`data.training_dataset_name` is required for Hugging Face training formats (`hf_triplet`, "
                 "`hf_tevatron_passage`)."
             )
+        if cfg.training.hub.enabled:
+            if not cfg.training.hub.repo_prefix:
+                raise ValueError("`training.hub.repo_prefix` is required when `training.hub.enabled=true`.")
+            if not cfg.training.hub.auto_repo_from_experiment:
+                raise ValueError("Only `training.hub.auto_repo_from_experiment=true` is currently supported.")
 
     if cfg.data.full_embeddings_source in {"auto", "hf_dataset"} and not cfg.data.hf_embeddings_repo_id:
         raise ValueError(

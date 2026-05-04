@@ -95,6 +95,7 @@ training:
   save_steps: 1000
   eval_steps: 1000
   logging_steps: 50
+  auto_resume_from_last_checkpoint: true
   lora:
     enabled: true
     r: 16
@@ -107,3 +108,11 @@ training:
     modules_to_save: []
     adapter_name: "default"
     output_adapter_dir: "outputs/models/nomic_lora_adapter"
+  hub:
+    enabled: true
+    repo_prefix: "FrAle01"
+    private: true
+    token_env: "HF_TOKEN"
+    auto_repo_from_experiment: true
+    repo_suffix_full: "finetuned-model"
+    repo_suffix_lora: "lora-adapter"

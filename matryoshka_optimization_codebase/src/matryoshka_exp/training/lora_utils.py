@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Iterable, List, Optional
 
@@ -95,17 +96,67 @@ def save_lora_adapter(sentence_model, output_adapter_dir: str | Path, metadata: 
     return output_path
 
 
+def load_lora_metadata(adapter_path: str | Path) -> Optional[dict]:
+    adapter_ref = str(adapter_path)
+    if not adapter_ref.strip():
+        return None
+
+    metadata_filename = "lora_adapter_metadata.json"
+    local_candidate = Path(adapter_ref) / metadata_filename
+    if local_candidate.exists():
+        with open(local_candidate, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+    # Support Hub repo ids directly.
+    if "/" in adapter_ref and not Path(adapter_ref).exists():
+        from huggingface_hub import hf_hub_download
+
+        token = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_HUB_TOKEN")
+        try:
+            downloaded = hf_hub_download(
+                repo_id=adapter_ref,
+                filename=metadata_filename,
+                repo_type="model",
+                token=token,
+            )
+        except Exception:
+            return None
+        with open(downloaded, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return None
+
+
 def load_lora_adapter(sentence_model, adapter_path: str | Path, adapter_name: str = "default", logger=None) -> None:
     from peft import PeftModel
 
-    adapter_path = Path(adapter_path)
-    if not adapter_path.exists():
-        raise ValueError(f"LoRA adapter path does not exist: {adapter_path}")
+    adapter_ref = str(adapter_path).strip()
+    if not adapter_ref:
+        raise ValueError("LoRA adapter path/repo id cannot be empty.")
+    is_local_path = Path(adapter_ref).exists()
+    if ("/" not in adapter_ref) and not is_local_path:
+        raise ValueError(f"LoRA adapter path does not exist and is not a valid Hub repo id: {adapter_ref}")
 
     first_module, backbone = _get_sentence_transformer_backbone(sentence_model)
+    metadata = load_lora_metadata(adapter_ref)
+    if metadata:
+        expected_base = str(metadata.get("base_model_name_or_path", "")).strip()
+        if expected_base and str(getattr(backbone.config, "_name_or_path", "")).strip() != expected_base and logger is not None:
+            logger.warning(
+                "LoRA metadata base model `%s` does not match runtime backbone `%s`.",
+                expected_base,
+                str(getattr(backbone.config, "_name_or_path", "")).strip(),
+            )
+    elif ("/" in adapter_ref) and not is_local_path and logger is not None:
+        token = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_HUB_TOKEN")
+        if not token:
+            logger.warning(
+                "No HF token detected while loading adapter repo `%s`. Loading private adapters may fail.",
+                adapter_ref,
+            )
+
     peft_model = PeftModel.from_pretrained(
         backbone,
-        str(adapter_path),
+        adapter_ref,
         adapter_name=adapter_name,
         is_trainable=False,
     )
@@ -113,4 +164,4 @@ def load_lora_adapter(sentence_model, adapter_path: str | Path, adapter_name: st
     first_module.auto_model = peft_model
 
     if logger is not None:
-        logger.info("Loaded LoRA adapter `%s` from %s", adapter_name, adapter_path)
+        logger.info("Loaded LoRA adapter `%s` from %s", adapter_name, adapter_ref)
