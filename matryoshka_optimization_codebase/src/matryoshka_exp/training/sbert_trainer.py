@@ -42,6 +42,7 @@ class SbertMatryoshkaFinetuner:
         if finetune_strategy == "lora":
             if not tcfg.lora.enabled:
                 self.logger.warning("`training.lora.enabled` is false but strategy is `lora`; proceeding with LoRA.")
+            self.logger.info("Applying LoRA adapters to the model")
             lora_target_modules = apply_lora_to_sentence_transformer(model, tcfg.lora, logger=self.logger)
         elif finetune_strategy != "full":
             raise ValueError(f"Unsupported fine-tuning strategy: {tcfg.finetune_strategy}")
@@ -57,6 +58,7 @@ class SbertMatryoshkaFinetuner:
             tevatron_negative_passages_column=cfg.data.tevatron_negative_passages_column,
             tevatron_passage_text_field=cfg.data.tevatron_passage_text_field,
             training_local_path=cfg.data.training_local_path,
+            logger=self.logger,
             verbose=cfg.execution.verbose,
         )
         train_ds = loader.load()
@@ -64,13 +66,16 @@ class SbertMatryoshkaFinetuner:
         # The code assumes retrieval-oriented training. MultipleNegativesRankingLoss is a
         # strong default for query-document embedding fine-tuning.
         if tcfg.base_loss == "MultipleNegativesRankingLoss":
+            self.logger.info("Using `MultipleNegativesRankingLoss` as the base loss for fine-tuning.")
             base_loss = losses.MultipleNegativesRankingLoss(model)
         elif tcfg.base_loss == "MarginMSELoss":
+            self.logger.info("Using `MarginMSELoss` as the base loss for fine-tuning.")
             base_loss = losses.MarginMSELoss(model)
         else:
             raise ValueError(f"Unsupported base loss: {tcfg.base_loss}")
 
         if tcfg.use_2d_matryoshka:
+            self.logger.info("Using `Matryoshka2dLoss` for fine-tuning with matryoshka dimensions %s and %d layers per step.", tcfg.matryoshka_dimensions, tcfg.n_layers_per_step)
             train_loss = losses.Matryoshka2dLoss(
                 model,
                 loss=base_loss,
@@ -78,6 +83,7 @@ class SbertMatryoshkaFinetuner:
                 n_layers_per_step=tcfg.n_layers_per_step,
             )
         elif tcfg.use_matryoshka:
+            self.logger.info("Using `MatryoshkaLoss` for fine-tuning with matryoshka dimensions %s.", tcfg.matryoshka_dimensions)
             train_loss = losses.MatryoshkaLoss(
                 model,
                 loss=base_loss,
@@ -117,6 +123,7 @@ class SbertMatryoshkaFinetuner:
             self.logger.info("Resuming fine-tuning from checkpoint: %s", resume_checkpoint)
             trainer.train(resume_from_checkpoint=resume_checkpoint)
         else:
+            self.logger.info("No checkpoint found for resuming; starting fine-tuning from scratch.")
             trainer.train()
         if finetune_strategy == "lora":
             adapter_path = save_lora_adapter(

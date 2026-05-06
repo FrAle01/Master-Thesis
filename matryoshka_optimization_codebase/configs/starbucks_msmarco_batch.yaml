@@ -43,12 +43,12 @@ utility:
   metric: "relative_score_dissimilarity"
   epsilon: 1.0e-6
   alpha: 0.7
-  sample_pairs_per_query: 128
+  sample_pairs_per_query: -1
 
 optimization:
   budget_gb: 10.00
   algorithm: "lagrangian_dual"
-  max_iter: 128
+  max_iter: 150
   lambda_low: 0.0
   lambda_high: 1.0e-4
   tolerance: 1.0e-3

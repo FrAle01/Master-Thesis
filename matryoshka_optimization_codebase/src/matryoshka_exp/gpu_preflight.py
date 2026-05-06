@@ -16,7 +16,7 @@ def _cuda_debug_details() -> str:
 
 def validate_cuda_runtime_or_raise(*, context: str) -> None:
     """Fail fast with actionable diagnostics if CUDA runtime is not usable."""
-    expected_cuda = "12.1"
+    expected_cuda = ["11.8.", "12.1"]  # cu121 is recommended for this VM setup, but allow cu122 if present in torch.version.cuda
 
     if torch.version.cuda is None:
         raise RuntimeError(
@@ -25,7 +25,7 @@ def validate_cuda_runtime_or_raise(*, context: str) -> None:
             f"Diagnostics: {_cuda_debug_details()}"
         )
 
-    if str(torch.version.cuda) != expected_cuda:
+    if str(torch.version.cuda) in expected_cuda:
         raise RuntimeError(
             f"[{context}] Incompatible PyTorch CUDA runtime detected: torch.version.cuda={torch.version.cuda}. "
             f"Expected {expected_cuda} (cu121) for this VM setup. "
