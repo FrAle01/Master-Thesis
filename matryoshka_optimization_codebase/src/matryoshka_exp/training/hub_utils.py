@@ -53,6 +53,7 @@ def upload_folder_to_hub(
         folder_path=str(folder_path),
         repo_type="model",
         commit_message=commit_message,
+        ignore_patterns=["checkpoint-*", "checkpoints/*", "checkpoints/**", "checkpoint/*", "checkpoint/**"],
     )
     revision = getattr(commit_info, "oid", None) or getattr(commit_info, "commit_hash", None) or ""
     return {"repo_id": repo_id, "revision": str(revision)}

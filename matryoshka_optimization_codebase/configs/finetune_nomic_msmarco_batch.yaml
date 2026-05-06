@@ -83,15 +83,15 @@ training:
   base_loss: "MultipleNegativesRankingLoss"
   use_matryoshka: true
   use_2d_matryoshka: false
-  matryoshka_dimensions: [32, 64, 128, 256, 512,768]
+  matryoshka_dimensions: [768, 512, 256, 128, 64, 32]
   epochs: 1
   per_device_train_batch_size: 16
-  gradient_accumulation_steps: 1
+  gradient_accumulation_steps: 8
   learning_rate: 2.0e-5
-  warmup_ratio: 0.1
+  warmup_ratio: 0.03
   weight_decay: 0.01
-  fp16: true
-  bf16: false
+  fp16: false
+  bf16: true
   save_steps: 25000
   eval_steps: 1000
   logging_steps: 50

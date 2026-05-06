@@ -23,6 +23,7 @@ class SbertMatryoshkaFinetuner:
 
     def run(self) -> Path:
         from sentence_transformers import SentenceTransformer, SentenceTransformerTrainer, SentenceTransformerTrainingArguments, losses
+        from sentence_transformers import BatchSamplers
 
         cfg = self.config
         tcfg = cfg.training
@@ -32,6 +33,9 @@ class SbertMatryoshkaFinetuner:
                 "SbertMatryoshkaFinetuner supports only `sentence_transformers` backend. "
                 f"Received: {cfg.model.backend}"
             )
+        
+        checkpoints_dir = Path(tcfg.output_model_dir) / "checkpoints"
+
 
         model = SentenceTransformer(
             cfg.model.model_name_or_path,
@@ -93,10 +97,11 @@ class SbertMatryoshkaFinetuner:
             train_loss = base_loss
 
         args = SentenceTransformerTrainingArguments(
-            output_dir=tcfg.output_model_dir,
+            output_dir=str(checkpoints_dir),
             num_train_epochs=tcfg.epochs,
             per_device_train_batch_size=tcfg.per_device_train_batch_size,
             gradient_accumulation_steps=tcfg.gradient_accumulation_steps,
+            batch_sampler=BatchSamplers.NO_DUPLICATES,
             learning_rate=tcfg.learning_rate,
             warmup_ratio=tcfg.warmup_ratio,
             weight_decay=tcfg.weight_decay,
@@ -118,7 +123,7 @@ class SbertMatryoshkaFinetuner:
             loss=train_loss,
         )
         self.logger.info("Starting Sentence Transformers fine-tuning with strategy `%s`.", finetune_strategy)
-        resume_checkpoint = self._resolve_resume_checkpoint(tcfg.output_model_dir)
+        resume_checkpoint = self._resolve_resume_checkpoint(checkpoints_dir)
         if resume_checkpoint:
             self.logger.info("Resuming fine-tuning from checkpoint: %s", resume_checkpoint)
             trainer.train(resume_from_checkpoint=resume_checkpoint)

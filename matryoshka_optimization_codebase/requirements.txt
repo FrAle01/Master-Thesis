@@ -20,4 +20,4 @@ huggingface_hub>=0.24.7
 python-terrier>=0.13.0
 pyarrow>=17.0.0
 
-faiss-gpu-cu12>=1.11.0
+faiss-gpu-cu11>=1.13.0
