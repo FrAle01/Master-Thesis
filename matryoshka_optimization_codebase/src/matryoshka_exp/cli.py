@@ -14,6 +14,7 @@ def cmd_train(args):
     if str(config.execution.device).strip().lower() == "cuda":
         validate_cuda_runtime_or_raise(context="cli.train")
     logger = configure_logging(verbose=True)
+    logger.info("Starting fine-tuning with for model %s with strategy %s", config.model.model_name_or_path, config.training.finetune_strategy)
     finetuner = SbertMatryoshkaFinetuner(config, logger)
     finetuner.run()
 

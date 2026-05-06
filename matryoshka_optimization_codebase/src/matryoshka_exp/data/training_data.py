@@ -35,6 +35,7 @@ class TrainingDatasetLoader:
         tevatron_passage_text_field: str = "text",
         training_local_path: Optional[str] = None,
         local_path: Optional[str] = None,
+        logger: Optional[Any] = None,
         verbose: bool = True,
     ):
         self.dataset_name = dataset_name
@@ -48,28 +49,35 @@ class TrainingDatasetLoader:
         self.tevatron_passage_text_field = tevatron_passage_text_field
         self.training_local_path = training_local_path or local_path
         self.verbose = verbose
-
+        self.logger = logger
     def load(self):
         if self.fmt == "hf_triplet":
             if not self.dataset_name:
                 raise ValueError("`dataset_name` is required for `hf_triplet` format.")
             from datasets import load_dataset
 
+            self.logger.info("Loading dataset '%s' split '%s' for training, using %s", self.dataset_name, self.split, self.fmt)
             ds = load_dataset(self.dataset_name, split=self.split)
+            self.logger.info("Loaded dataset with %d rows", ds.num_rows)
             return self._normalize_triplet_dataset(ds)
+        
         if self.fmt == "hf_tevatron_passage":
             if not self.dataset_name:
                 raise ValueError("`dataset_name` is required for `hf_tevatron_passage` format.")
             from datasets import load_dataset
 
+            self.logger.info("Loading dataset '%s' split '%s' for training, using %s", self.dataset_name, self.split, self.fmt)
             ds = load_dataset(self.dataset_name, split=self.split)
+            self.logger.info("Loaded dataset with %d rows", ds.num_rows)
             return self._normalize_tevatron_passage_dataset(ds)
         if self.fmt == "jsonl_triplet":
             if not self.training_local_path:
                 raise ValueError("`training_local_path` is required for `jsonl_triplet` format.")
             from datasets import load_dataset
 
+            self.logger.info("Loading dataset from local path '%s' for training, using %s", self.training_local_path, self.fmt)
             ds = load_dataset("json", data_files=self.training_local_path, split="train")
+            self.logger.info("Loaded dataset with %d rows", ds.num_rows)
             return self._normalize_triplet_dataset(ds)
         raise ValueError(f"Unsupported training format: {self.fmt}")
 
@@ -82,6 +90,7 @@ class TrainingDatasetLoader:
 
         self._validate_required_columns(ds, required_columns, self.fmt)
         normalized = ds.select_columns(required_columns).rename_columns(dict(zip(required_columns, output_columns)))
+        self.logger.info("Normalized dataset with %d rows", normalized.num_rows)
         self._validate_non_empty_rows(normalized, output_columns, self.fmt)
         return normalized
 
