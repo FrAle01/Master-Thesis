@@ -1,0 +1,56 @@
+dataset:
+  pyterrier_dataset: "irds:msmarco-passage/trec-dl-2019"
+  topics_variant: "test"
+  qrels_variant: "test"
+  text_fields: ["text"]
+  topic_column: "query"
+  docno_column: "docno"
+  max_docs: null
+  max_queries: null
+
+models:
+  - id: "modernbert_base"
+    type: "hf_model"
+    path_or_repo: "nomic-ai/modernbert-embed-base"
+    trust_remote_code: false
+    normalize: true
+
+  - id: "modernbert_finetuned_local_placeholder"
+    type: "local_model"
+    path_or_repo: "outputs/models/finetuned"
+    trust_remote_code: false
+    normalize: true
+
+  - id: "modernbert_lora_placeholder"
+    type: "lora_adapter"
+    base_model: "nomic-ai/modernbert-embed-base"
+    path_or_repo: "outputs/models/lora_adapter"
+    adapter_name: "default"
+    trust_remote_code: false
+    normalize: true
+
+dimensions: [768, 512, 256]
+
+retrieval:
+  mode: "pyterrier_dr_faiss"
+  similarity: "dot"
+  top_k: 100
+  candidate_k: 200
+  batch_size_queries: 32
+  batch_size_docs: 256
+  terrier_wmodel: "BM25"
+  faiss_enabled: true
+  faiss_use_gpu: true
+  faiss_backend: "flat"
+  require_gpu: true
+  fallback_to_exact_on_backend_error: false
+
+evaluation:
+  metrics: ["ndcg_cut_10", "map", "recip_rank", "recall_100"]
+
+output:
+  output_dir: "outputs/side_quests/retrieval_benchmark"
+  run_name: "modernbert_matrix"
+
+device: "cuda"
+seed: 13
