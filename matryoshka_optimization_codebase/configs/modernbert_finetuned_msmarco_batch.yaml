@@ -1,0 +1,75 @@
+data:
+  pyterrier_dataset: "irds:msmarco-passage/trec-dl-2019/judged"
+  text_fields: ["text"]
+  max_docs: null
+  max_queries: null
+  topic_column: "query"
+  docno_column: "docno"
+  candidate_source: "pyterrier_bm25"
+  candidates_per_query: 200
+  local_terrier_index_path: "./indices/msmarco-passage"
+  build_local_terrier_index_if_missing: true
+  terrier_index_threads: 4
+  terrier_index_overwrite: false
+  terrier_meta_lengths:
+    docno: 64
+    text: 4096
+  full_embeddings_source: "auto"
+  hf_embeddings_repo_id: "FrAle01/msmarco-passage-full-embeddings"
+  hf_embeddings_split: "train"
+  hf_embeddings_docno_column: "docno"
+  hf_embeddings_vector_column: "full_embedding"
+
+model:
+  mode: "pretrained"
+  backend: "transformers"
+  model_name_or_path: "matryoshka_optimization_codebase/outputs/models/nomic_mrl_msmarco"
+  trust_remote_code: true
+  query_prompt: "query: "
+  document_prompt: "passage: "
+  similarity: "dot"
+  full_profile_name: "full"
+  pooling: "mean"
+
+profiles:
+  - {name: "p2_d32", layer: 2, dimension: 32, normalize: true}
+  - {name: "p4_d64", layer: 4, dimension: 64, normalize: true}
+  - {name: "p6_d128", layer: 6, dimension: 128, normalize: true}
+  - {name: "p8_d256", layer: 8, dimension: 256, normalize: true}
+  - {name: "p10_d512", layer: 10, dimension: 512, normalize: true}
+  - {name: "full", layer: 12, dimension: 768, normalize: true}
+
+utility:
+  metric: "relative_score_dissimilarity"
+  epsilon: 1.0e-6
+  alpha: 0.7
+  sample_pairs_per_query: -1
+
+optimization:
+  budget_gb: 10.00
+  algorithm: "lagrangian_dual"
+  max_iter: 150
+  lambda_low: 0.0
+  lambda_high: 1.0e-4
+  tolerance: 1.0e-3
+  mode: "batch"
+
+retrieval:
+  mode: "dense_exact"
+  top_k: 100
+  candidate_k: 200
+  terrier_wmodel: "BM25"
+
+execution:
+  output_dir: "outputs"
+  experiment_name: "modernbert_finetuned_msmarco_batch"
+  device: "cuda"
+  dtype: "float16"
+  doc_batch_size: 128
+  query_batch_size: 64
+  save_score_pairs: true
+  save_runs: true
+  verbose: true
+
+training:
+  enabled: false
