@@ -52,6 +52,9 @@ utility:
   epsilon: 1.0e-6
   alpha: 0.7
   sample_pairs_per_query: 64
+  relevance:
+    mode: "weak"
+    weak_source: "bm25"
 
 optimization:
   budget_gb: 0.20
@@ -63,7 +66,7 @@ optimization:
 retrieval:
   mode: "dense_exact"
   top_k: 100
-  candidate_k: 200
+  candidate_k: 2000
   terrier_wmodel: "BM25"
 
 execution:

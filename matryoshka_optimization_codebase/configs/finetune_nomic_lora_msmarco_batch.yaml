@@ -6,7 +6,7 @@ data:
   topic_column: "query"
   docno_column: "docno"
   candidate_source: "pyterrier_bm25"
-  candidates_per_query: 200
+  candidates_per_query: 2000
   local_terrier_index_path: "./indices/msmarco-passage"
   build_local_terrier_index_if_missing: true
   terrier_index_threads: 4
@@ -53,6 +53,9 @@ utility:
   epsilon: 1.0e-6
   alpha: 0.7
   sample_pairs_per_query: 64
+  relevance:
+    mode: "weak"
+    weak_source: "bm25"
 
 optimization:
   budget_gb: 0.20
@@ -64,7 +67,7 @@ optimization:
 retrieval:
   mode: "dense_exact"
   top_k: 100
-  candidate_k: 200
+  candidate_k: 2000
   terrier_wmodel: "BM25"
 
 execution:

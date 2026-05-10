@@ -172,6 +172,7 @@ class ExperimentRunner:
         save_df(metadata, self.output_dir / "corpus_metadata.parquet")
 
         utility_pairs_df, utility_table_df = self.utility_estimator.estimate_for_subset(
+            loader=loader,
             adapter=adapter,
             profiles=profiles,
             full_profile=full_profile,
@@ -180,6 +181,7 @@ class ExperimentRunner:
             subset_docnos=docnos,
             subset_doc_embeddings=full_doc_embeddings,
             full_query_embeddings=full_query_embeddings,
+            corpus_metadata=metadata,
         )
         if self.config.execution.save_score_pairs:
             save_df(utility_pairs_df, self.output_dir / "sampled_score_pairs.parquet")
@@ -204,6 +206,7 @@ class ExperimentRunner:
             },
             self.output_dir / "optimization_result.json",
         )
+        save_json(self.utility_estimator.last_report, self.output_dir / "relevance_estimation_report.json")
 
         if not opt_result.feasible:
             budget = self.config.budget_bytes_resolved()

@@ -1,22 +1,34 @@
 from __future__ import annotations
 
 from collections import defaultdict
-import hashlib
 
 import numpy as np
 import pandas as pd
 import torch
 from tqdm import tqdm
 
+from .relevance.base import RELEVANCE_COLUMNS
+from .relevance.cross_encoder_estimator import cross_encoder_rescore, estimate_from_cross_scores
+from .relevance.fusion import merge_refined_scores, select_uncertain_high_impact_pairs
+from .relevance.qrels_adjustment import apply_qrels_hard_override
+from .relevance.weak_estimators import (
+    build_dense_candidates,
+    build_dense_candidates_with_pyterrier_dr,
+    combine_hybrid_candidates,
+    estimate_from_candidates,
+)
+
 
 class UtilityEstimator:
     def __init__(self, config, logger):
         self.config = config
         self.logger = logger
+        self.last_report = {}
 
     def estimate_for_subset(
         self,
         *,
+        loader,
         adapter,
         profiles,
         full_profile,
@@ -25,73 +37,83 @@ class UtilityEstimator:
         subset_docnos,
         subset_doc_embeddings,
         full_query_embeddings,
+        corpus_metadata,
     ):
-        doc_index = {docno: i for i, docno in enumerate(subset_docnos)}
-        qrels_views = self._prepare_qrels_views(qrels)
-        sample_pairs = self._build_score_sampling_frame(topics, qrels_views, subset_docnos)
-        sample_columns = ["qid", "docno", "profile", "full_score", "reduced_score", "utility"]
-        sampled_rows = []
-        per_doc_profile_utilities = defaultdict(list)
-
-        if sample_pairs.empty:
-            self.logger.warning("No sample pairs for utility estimation. Returning default utilities.")
-            utility_pairs_df = pd.DataFrame(columns=sample_columns)
-            aggregated_rows = []
-            for docno in subset_docnos:
-                for profile in profiles:
-                    default_utility = 1.0 if profile.name == full_profile.name else 0.0
-                    aggregated_rows.append({"docno": docno, "profile": profile.name, "utility": default_utility})
-            utility_table_df = pd.DataFrame(aggregated_rows, columns=["docno", "profile", "utility"])
+        doc_index = {str(docno): i for i, docno in enumerate(subset_docnos)}
+        pair_relevance_df = self._estimate_pair_relevance(
+            loader=loader,
+            adapter=adapter,
+            topics=topics,
+            qrels=qrels,
+            subset_docnos=subset_docnos,
+            subset_doc_embeddings=subset_doc_embeddings,
+            full_query_embeddings=full_query_embeddings,
+            corpus_metadata=corpus_metadata,
+        )
+        if pair_relevance_df.empty:
+            self.logger.warning("No relevance pairs available. Returning default utilities.")
+            utility_pairs_df = pd.DataFrame(columns=["qid", "docno", "profile", "full_score", "reduced_score", "utility", *RELEVANCE_COLUMNS[2:]])
+            utility_table_df = self._default_utility_table(subset_docnos, profiles, full_profile)
+            self.last_report = {
+                "relevance_mode": self.config.utility.relevance.mode,
+                "coverage_pairs": 0,
+                "num_docs": len(subset_docnos),
+                "qrel_overrides": 0,
+                "default_docs": int(len(subset_docnos)),
+            }
             return utility_pairs_df, utility_table_df
 
+        sample_columns = [
+            "qid",
+            "docno",
+            "profile",
+            "full_score",
+            "reduced_score",
+            "utility",
+            "relevance_estimated",
+            "relevance_final",
+            "confidence",
+            "uncertainty",
+            "source_mode",
+            "is_qrel_overridden",
+        ]
+        sampled_rows = []
+        per_doc_profile_utilities = defaultdict(list)
         qid_to_position = {str(qid): i for i, qid in enumerate(topics["qid"].astype(str).tolist())}
-        grouped_pairs = list(sample_pairs.groupby("qid"))
-        for qid, group in tqdm(
-            grouped_pairs,
-            desc="Estimating per-doc utilities",
-            disable=not self.config.execution.verbose,
-        ):
-            q_offset = qid_to_position[str(qid)]
+
+        grouped_pairs = list(pair_relevance_df.groupby("qid"))
+        for qid, group in tqdm(grouped_pairs, desc="Estimating per-doc utilities", disable=not self.config.execution.verbose):
+            q_offset = qid_to_position.get(str(qid))
+            if q_offset is None:
+                continue
             q_full = full_query_embeddings[q_offset : q_offset + 1]
             group_docnos = group["docno"].astype(str).tolist()
-            group_indices = [doc_index[d] for d in group_docnos]
+            group_indices = [doc_index[d] for d in group_docnos if d in doc_index]
+            valid_docnos = [d for d in group_docnos if d in doc_index]
+            if not group_indices:
+                continue
+
+            rel_map = dict(zip(group["docno"].astype(str), group["relevance_final"].astype(float)))
+            est_rel_map = dict(zip(group["docno"].astype(str), group["relevance_estimated"].astype(float)))
+            conf_map = dict(zip(group["docno"].astype(str), group["confidence"].astype(float)))
+            unc_map = dict(zip(group["docno"].astype(str), group["uncertainty"].astype(float)))
+            src_map = dict(zip(group["docno"].astype(str), group["source_mode"].astype(str)))
+            over_map = dict(zip(group["docno"].astype(str), group["is_qrel_overridden"].astype(bool)))
+
             doc_full = subset_doc_embeddings[group_indices]
             full_scores = adapter.similarity(q_full, doc_full).squeeze(0)
-
-            neg_docnos = self._sample_margin_negatives(str(qid), qrels_views, subset_docnos, group_docnos)
-            neg_indices = [doc_index[d] for d in neg_docnos if d in doc_index]
-            neg_scores_full = None
-            if neg_indices:
-                self.logger.debug("For qid %s, sampled %s margin negatives for utility estimation.", qid, len(neg_indices))
-                neg_doc_full = subset_doc_embeddings[neg_indices]
-                neg_scores_full = adapter.similarity(q_full, neg_doc_full).squeeze(0)
 
             for profile in profiles:
                 q_reduced = q_full[:, : profile.dimension]
                 doc_reduced = doc_full[:, : profile.dimension]
                 reduced_scores = adapter.similarity(q_reduced, doc_reduced).squeeze(0)
-                utility = self._compute_utility_tensor(
-                    full_scores,
-                    reduced_scores,
-                    q_reduced,
-                    profile.dimension,
-                    neg_indices,
-                    subset_doc_embeddings,
-                    neg_scores_full,
-                    adapter,
-                )
-                self.logger.debug(
-                    "For qid %s and profile %s, computed utilities for %s docs.",
-                    qid,
-                    profile.name,
-                    len(group_docnos),
-                )
 
                 full_scores_np = full_scores.detach().cpu().numpy()
                 reduced_scores_np = reduced_scores.detach().cpu().numpy()
-                utility_np = utility.detach().cpu().numpy()
 
-                for docno, s_full, s_red, u in zip(group_docnos, full_scores_np, reduced_scores_np, utility_np):
+                for docno, s_full, s_red in zip(valid_docnos, full_scores_np, reduced_scores_np):
+                    rel = float(rel_map.get(docno, 0.0))
+                    utility = float(rel * s_red)
                     sampled_rows.append(
                         {
                             "qid": str(qid),
@@ -99,195 +121,184 @@ class UtilityEstimator:
                             "profile": profile.name,
                             "full_score": float(s_full),
                             "reduced_score": float(s_red),
-                            "utility": float(u),
+                            "utility": utility,
+                            "relevance_estimated": float(est_rel_map.get(docno, rel)),
+                            "relevance_final": rel,
+                            "confidence": float(conf_map.get(docno, 0.0)),
+                            "uncertainty": float(unc_map.get(docno, 1.0)),
+                            "source_mode": str(src_map.get(docno, "unknown")),
+                            "is_qrel_overridden": bool(over_map.get(docno, False)),
                         }
                     )
-                    per_doc_profile_utilities[(docno, profile.name)].append(float(u))
+                    per_doc_profile_utilities[(docno, profile.name)].append(utility)
 
         utility_pairs_df = pd.DataFrame(sampled_rows, columns=sample_columns)
+        utility_table_df, default_count = self._aggregate_table(subset_docnos, profiles, full_profile, per_doc_profile_utilities)
+
+        overrides = int(pair_relevance_df["is_qrel_overridden"].sum()) if not pair_relevance_df.empty else 0
+        self.last_report = {
+            "relevance_mode": self.config.utility.relevance.mode,
+            "weak_source": self.config.utility.relevance.weak_source,
+            "coverage_pairs": int(len(pair_relevance_df)),
+            "covered_docs": int(pair_relevance_df["docno"].nunique()),
+            "num_docs": int(len(subset_docnos)),
+            "qrel_overrides": overrides,
+            "default_docs": int(default_count),
+            "default_doc_fraction": float(default_count / max(1, len(subset_docnos))),
+        }
+        self.logger.info("Relevance estimation report: %s", self.last_report)
+        return utility_pairs_df, utility_table_df
+
+    def _default_utility_table(self, subset_docnos, profiles, full_profile):
         aggregated_rows = []
-        self.logger.info("Aggregating utilities per doc and profile for %s docs and %s profiles.", len(subset_docnos), len(profiles))
-        default_count = 0
         for docno in subset_docnos:
+            for profile in profiles:
+                default_utility = 1.0 if profile.name == full_profile.name else 0.0
+                aggregated_rows.append({"docno": str(docno), "profile": profile.name, "utility": default_utility})
+        return pd.DataFrame(aggregated_rows, columns=["docno", "profile", "utility"])
+
+    def _aggregate_table(self, subset_docnos, profiles, full_profile, per_doc_profile_utilities):
+        aggregated_rows = []
+        default_count = 0
+        for docno in [str(d) for d in subset_docnos]:
+            has_any = False
             for profile in profiles:
                 values = per_doc_profile_utilities.get((docno, profile.name), [])
                 if values:
                     agg = float(np.sum(values))
+                    has_any = True
                 else:
                     agg = 1.0 if profile.name == full_profile.name else 0.0
-                    default_count = default_count + 1 if profile.name == full_profile.name else default_count
-                    self.logger.debug(
-                        "No utility samples for docno %s and profile %s. Using default utility of %s.",
-                        docno,
-                        profile.name,                        
-                        agg,
-                    )
-
                 aggregated_rows.append({"docno": docno, "profile": profile.name, "utility": agg})
-        self.logger.info(
-            "Completed utility aggregation. %s out of %s docs used default utility values.",
-            default_count,
-            len(subset_docnos),
-        )
-        utility_table_df = pd.DataFrame(aggregated_rows, columns=["docno", "profile", "utility"])
-        return utility_pairs_df, utility_table_df
+            if not has_any:
+                default_count += 1
+        return pd.DataFrame(aggregated_rows, columns=["docno", "profile", "utility"]), default_count
 
-    def _compute_utility_tensor(
+    def _estimate_pair_relevance(
         self,
-        full_scores: torch.Tensor,
-        reduced_scores: torch.Tensor,
-        q_reduced: torch.Tensor,
-        profile_dim: int,
-        neg_indices,
-        subset_doc_embeddings: torch.Tensor,
-        neg_scores_full: torch.Tensor | None,
+        *,
+        loader,
         adapter,
-    ) -> torch.Tensor:
-        eps = float(self.config.utility.epsilon)
-        metric = self.config.utility.metric
+        topics,
+        qrels,
+        subset_docnos,
+        subset_doc_embeddings,
+        full_query_embeddings,
+        corpus_metadata,
+    ) -> pd.DataFrame:
+        mode = str(self.config.utility.relevance.mode)
+        weak_source = str(self.config.utility.relevance.weak_source)
+        top_k = int(self.config.utility.relevance.top_k_candidates)
+        rerank_k = int(self.config.utility.relevance.rerank_k)
+        self.logger.info("Estimating relevance with mode=%s weak_source=%s", mode, weak_source)
 
-        if metric == "relative_score_dissimilarity":
-            denom = torch.maximum(full_scores.abs(), torch.tensor(eps, device=full_scores.device, dtype=full_scores.dtype))
-            loss = (full_scores - reduced_scores).abs() / denom
-            return 1.0 - torch.clamp(loss, 0.0, 1.0)
+        bm25_candidates = pd.DataFrame(columns=["qid", "docno", "score", "rank"])
+        dense_candidates = pd.DataFrame(columns=["qid", "docno", "score", "rank"])
 
-        if metric == "absolute_score_utility":
-            return 1.0 / (1.0 + (full_scores - reduced_scores).abs())
+        if mode in {"weak", "hybrid"} and weak_source in {"bm25", "hybrid_rerank"}:
+            bm25_candidates = loader.build_bm25_candidates(self.config.retrieval, topics)
+            bm25_candidates = bm25_candidates[bm25_candidates["docno"].astype(str).isin(set(map(str, subset_docnos)))].copy()
+            bm25_candidates = bm25_candidates.groupby("qid", sort=False).head(top_k)
 
-        if metric == "squared_score_utility":
-            return 1.0 / (1.0 + torch.square(full_scores - reduced_scores))
-
-        if metric in {"relative_margin_utility", "hybrid_score_margin_utility"}:
-            if not neg_indices or neg_scores_full is None or neg_scores_full.numel() == 0:
-                self.logger.debug("No margin negatives for qid %s. Using default utility computation.", qid)
-                score_u = self._compute_utility_tensor(
-                    full_scores,
-                    reduced_scores,
-                    q_reduced,
-                    profile_dim,
-                    [],
-                    subset_doc_embeddings,
-                    None,
-                    adapter,
-                )
-                if metric == "relative_margin_utility":
-                    return torch.ones_like(full_scores)
-                return score_u
-
-            neg_doc_reduced = subset_doc_embeddings[neg_indices][:, :profile_dim]
-            neg_scores_reduced = adapter.similarity(q_reduced, neg_doc_reduced).squeeze(0)
-
-            if self.config.utility.aggregate != "mean":
-                raise ValueError(f"Unsupported utility.aggregate: {self.config.utility.aggregate}")
-
-            full_margin = full_scores.unsqueeze(1) - neg_scores_full.unsqueeze(0)
-            reduced_margin = reduced_scores.unsqueeze(1) - neg_scores_reduced.unsqueeze(0)
-            margin_denom = torch.maximum(full_margin.abs(), torch.tensor(eps, device=full_margin.device, dtype=full_margin.dtype))
-            margin_loss = (full_margin - reduced_margin).abs() / margin_denom
-            margin_u = 1.0 - torch.clamp(margin_loss, 0.0, 1.0)
-            margin_u = margin_u.mean(dim=1)
-
-            if metric == "relative_margin_utility":
-                return margin_u
-
-            score_u = self._compute_utility_tensor(
-                full_scores,
-                reduced_scores,
-                q_reduced,
-                profile_dim,
-                [],
-                subset_doc_embeddings,
-                None,
-                adapter,
+        if mode in {"weak", "hybrid"} and weak_source in {"dense", "hybrid_rerank"}:
+            dense_candidates = build_dense_candidates_with_pyterrier_dr(
+                topics=topics,
+                topic_column=self.config.data.topic_column,
+                subset_docnos=subset_docnos,
+                subset_doc_embeddings=subset_doc_embeddings,
+                full_query_embeddings=full_query_embeddings,
+                top_k=top_k,
+                index_path=self.config.output_path / "utility_relevance_dense_index",
             )
-            alpha = float(self.config.utility.alpha)
-            return alpha * score_u + (1.0 - alpha) * margin_u
+            if dense_candidates is None:
+                self.logger.info("pyterrier_dr not available for utility dense candidates; falling back to exact dense scoring.")
+                dense_candidates = build_dense_candidates(
+                    topics=topics,
+                    subset_docnos=subset_docnos,
+                    subset_doc_embeddings=subset_doc_embeddings,
+                    full_query_embeddings=full_query_embeddings,
+                    top_k=top_k,
+                    adapter=adapter,
+                )
 
-        raise ValueError(f"Unsupported utility metric: {metric}")
-
-    def _sample_margin_negatives(self, qid: str, qrels_views, subset_docnos, positive_docnos):
-        qid = str(qid)
-        positive_set = set(qrels_views["positive_by_qid"].get(qid, set()))
-        positive_set.update([str(d) for d in positive_docnos])
-        pool = [str(d) for d in subset_docnos if str(d) not in positive_set]
-        if not pool:
-            return []
-
-        digest = hashlib.sha1(str(qid).encode("utf-8")).hexdigest()
-        qid_hash = int(digest[:8], 16)
-        rng_seed = int(self.config.utility.seed + (qid_hash & 0xFFFF))
-        rng = np.random.default_rng(rng_seed)
-        n = min(int(self.config.utility.margin_negatives), len(pool))
-        picks = rng.choice(pool, size=n, replace=False)
-        return [str(x) for x in picks]
-
-    def _build_score_sampling_frame(self, topics, qrels_views, subset_docnos):
-        subset_docnos = [str(d) for d in subset_docnos]
-        max_pairs = self.config.utility.sample_pairs_per_query
-
-        subset_docno_set = set(subset_docnos)
-        rng = np.random.default_rng(int(self.config.utility.seed))
-        sampled = []
-        for qid in topics["qid"].astype(str).tolist():
-            positives = [d for d in qrels_views["positive_by_qid"].get(qid, set()) if d in subset_docno_set]
-            if not positives:
-                continue
-            self.logger.debug("For qid %s, found %s positive docnos in subset.", qid, len(positives))
-            positive_set = set(positives)
-            if max_pairs == -1:
-                selected = positives
+        if mode == "weak":
+            if weak_source == "bm25":
+                pair_df = estimate_from_candidates(bm25_candidates, source_mode="weak_bm25")
+            elif weak_source == "dense":
+                pair_df = estimate_from_candidates(dense_candidates, source_mode="weak_dense")
             else:
-                if len(positives) >= max_pairs:
-                    selected = [str(x) for x in rng.choice(positives, size=max_pairs, replace=False)]
-                else:
-                    qrel_zero_set = qrels_views["zero_by_qid"].get(qid, set())
-                    qrel_docno_set = qrels_views["all_by_qid"].get(qid, set())
-                    negative_pool = [
-                        d for d in subset_docnos if (d in qrel_zero_set or d not in qrel_docno_set) and d not in positive_set
-                    ]
-                    n_neg = max(0, max_pairs - len(positives))
-                    self.logger.debug(
-                        "For qid %s, sampling up to %s negatives from pool of %s candidates.",
-                        qid,
-                        n_neg,
-                        len(negative_pool),
-                    )
-                    if n_neg > 0 and negative_pool:
-                        take = min(n_neg, len(negative_pool))
-                        negatives = [str(x) for x in rng.choice(negative_pool, size=take, replace=False)]
-                    else:
-                        negatives = []
-                    selected = positives + negatives
-            self.logger.debug("For qid %s, selected %s docnos for utility estimation.", qid, len(selected))
-            for docno in selected:
-                sampled.append({"qid": qid, "docno": docno})
-        return pd.DataFrame(sampled, columns=["qid", "docno"])
+                merged = combine_hybrid_candidates(bm25_candidates, dense_candidates, rerank_k=rerank_k)
+                pair_df = estimate_from_candidates(merged, source_mode="weak_hybrid_rerank")
 
-    def _prepare_qrels_views(self, qrels: pd.DataFrame):
-        qrels_slim = qrels.loc[:, ["qid", "docno", self._resolve_qrels_label_column(qrels)]].copy()
-        qrels_slim["qid"] = qrels_slim["qid"].astype(str)
-        qrels_slim["docno"] = qrels_slim["docno"].astype(str)
-        label_col = self._resolve_qrels_label_column(qrels_slim)
-        qrels_slim[label_col] = pd.to_numeric(qrels_slim[label_col], errors="coerce")
-        if qrels_slim[label_col].isna().any():
-            raise ValueError(f"Qrels column `{label_col}` contains non-numeric relevance labels.")
+        elif mode == "model":
+            # Prefer PyTerrier BM25 candidates as the pipeline retrieval source for model judging.
+            seed_candidates = loader.build_bm25_candidates(self.config.retrieval, topics)
+            seed_candidates = seed_candidates[seed_candidates["docno"].astype(str).isin(set(map(str, subset_docnos)))].copy()
+            seed_candidates = seed_candidates.groupby("qid", sort=False).head(top_k)
+            topic_df = topics.loc[:, ["qid", self.config.data.topic_column]].rename(columns={self.config.data.topic_column: "query"})
+            doc_text = {
+                str(r["docno"]): str(r["text"])
+                for r in corpus_metadata.loc[:, ["docno", "text"]].to_dict(orient="records")
+            }
+            rescored = cross_encoder_rescore(
+                candidates=seed_candidates,
+                topics=topic_df,
+                doc_text_by_docno=doc_text,
+                model_name=str(self.config.utility.relevance.cross_encoder_model_name),
+            )
+            pair_df = estimate_from_cross_scores(rescored, source_mode="model_cross_encoder")
 
-        threshold = float(self.config.utility.relevance_threshold)
-        positive_by_qid = {}
-        zero_by_qid = {}
-        all_by_qid = {}
-        for qid, group in qrels_slim.groupby("qid", sort=False):
-            docs = group["docno"].tolist()
-            labels = group[label_col].to_numpy()
-            all_by_qid[qid] = set(docs)
-            positive_by_qid[qid] = {doc for doc, lab in zip(docs, labels) if lab >= threshold}
-            zero_by_qid[qid] = {doc for doc, lab in zip(docs, labels) if lab == 0}
+        elif mode == "hybrid":
+            if weak_source == "bm25":
+                weak_pairs = estimate_from_candidates(bm25_candidates, source_mode="hybrid_weak_bm25")
+                seed_candidates = bm25_candidates
+            elif weak_source == "dense":
+                weak_pairs = estimate_from_candidates(dense_candidates, source_mode="hybrid_weak_dense")
+                seed_candidates = dense_candidates
+            else:
+                merged = combine_hybrid_candidates(bm25_candidates, dense_candidates, rerank_k=rerank_k)
+                weak_pairs = estimate_from_candidates(merged, source_mode="hybrid_weak_hybrid_rerank")
+                seed_candidates = merged
 
-        return {
-            "positive_by_qid": positive_by_qid,
-            "zero_by_qid": zero_by_qid,
-            "all_by_qid": all_by_qid,
-        }
+            uncertain = select_uncertain_high_impact_pairs(
+                weak_pairs,
+                fraction=float(self.config.utility.relevance.high_impact_fraction),
+            )
+            refine_keys = set((str(r["qid"]), str(r["docno"])) for r in uncertain.to_dict(orient="records"))
+            refine_candidates = seed_candidates[
+                seed_candidates.apply(lambda x: (str(x["qid"]), str(x["docno"])) in refine_keys, axis=1)
+            ].copy()
+
+            topic_df = topics.loc[:, ["qid", self.config.data.topic_column]].rename(columns={self.config.data.topic_column: "query"})
+            doc_text = {
+                str(r["docno"]): str(r["text"])
+                for r in corpus_metadata.loc[:, ["docno", "text"]].to_dict(orient="records")
+            }
+            rescored = cross_encoder_rescore(
+                candidates=refine_candidates,
+                topics=topic_df,
+                doc_text_by_docno=doc_text,
+                model_name=str(self.config.utility.relevance.cross_encoder_model_name),
+            )
+            refined = estimate_from_cross_scores(rescored, source_mode="hybrid_refined_cross_encoder")
+            pair_df = merge_refined_scores(weak_pairs, refined, source_mode="hybrid_refined_cross_encoder")
+        else:
+            raise ValueError(f"Unsupported utility.relevance.mode: {mode}")
+
+        label_column = self._resolve_qrels_label_column(qrels)
+        pair_df, n_overrides = apply_qrels_hard_override(
+            pair_df,
+            qrels,
+            label_column=label_column,
+            scale_cfg=self.config.utility.relevance.scale,
+        )
+        self.logger.info(
+            "Relevance estimation complete. mode=%s pairs=%s overrides=%s",
+            mode,
+            len(pair_df),
+            n_overrides,
+        )
+        return pair_df.loc[:, RELEVANCE_COLUMNS].copy()
 
     def _resolve_qrels_label_column(self, qrels: pd.DataFrame) -> str:
         column = str(self.config.data.qrels_label_column)

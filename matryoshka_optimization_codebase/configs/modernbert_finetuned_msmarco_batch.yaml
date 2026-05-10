@@ -32,11 +32,11 @@ model:
   pooling: "mean"
 
 profiles:
-  - {name: "p2_d32", layer: 2, dimension: 32, normalize: true}
-  - {name: "p4_d64", layer: 4, dimension: 64, normalize: true}
-  - {name: "p6_d128", layer: 6, dimension: 128, normalize: true}
-  - {name: "p8_d256", layer: 8, dimension: 256, normalize: true}
-  - {name: "p10_d512", layer: 10, dimension: 512, normalize: true}
+  - {name: "d32", layer: 2, dimension: 32, normalize: true}
+  - {name: "d64", layer: 4, dimension: 64, normalize: true}
+  - {name: "d128", layer: 6, dimension: 128, normalize: true}
+  - {name: "d256", layer: 8, dimension: 256, normalize: true}
+  - {name: "d512", layer: 10, dimension: 512, normalize: true}
   - {name: "full", layer: 12, dimension: 768, normalize: true}
 
 utility:
@@ -44,6 +44,9 @@ utility:
   epsilon: 1.0e-6
   alpha: 0.7
   sample_pairs_per_query: -1
+  relevance:
+    mode: "weak"
+    weak_source: "bm25"
 
 optimization:
   budget_gb: 10.00
@@ -57,7 +60,7 @@ optimization:
 retrieval:
   mode: "dense_exact"
   top_k: 100
-  candidate_k: 200
+  candidate_k: 2000
   terrier_wmodel: "BM25"
 
 execution:

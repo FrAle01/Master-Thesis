@@ -130,6 +130,26 @@ class TrainingConfig:
 
 @dataclass
 class UtilityConfig:
+    @dataclass
+    class RelevanceScaleConfig:
+        mode: str = "minmax"
+        min_label: float = 0.0
+        max_label: float = 3.0
+        explicit_map: Dict[str, float] = field(default_factory=dict)
+
+    @dataclass
+    class RelevanceConfig:
+        mode: str = "weak"
+        weak_source: str = "bm25"
+        cross_encoder_model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+        top_k_candidates: int = 200
+        rerank_k: int = 50
+        uncertainty: str = "margin"
+        qrel_adjustment: str = "hard_override"
+        high_impact_fraction: float = 0.2
+        validation_qids_limit: int = 200
+        scale: "UtilityConfig.RelevanceScaleConfig" = field(default_factory=lambda: UtilityConfig.RelevanceScaleConfig())
+
     metric: str = "relative_score_dissimilarity"
     epsilon: float = 1e-6
     alpha: float = 0.7
@@ -138,6 +158,7 @@ class UtilityConfig:
     sample_pairs_per_query: int = 64
     relevance_threshold: float = 1.0
     seed: int = 13
+    relevance: "UtilityConfig.RelevanceConfig" = field(default_factory=lambda: UtilityConfig.RelevanceConfig())
 
 
 @dataclass
@@ -157,7 +178,7 @@ class OptimizationConfig:
 class RetrievalConfig:
     mode: str = "dense_exact"
     top_k: int = 100
-    candidate_k: int = 200
+    candidate_k: int = 2000
     batch_size_queries: int = 32
     batch_size_docs: int = 256
     use_pyterrier_bm25: bool = True
@@ -223,6 +244,18 @@ def _construct_training_config(payload: Optional[Dict[str, Any]]) -> TrainingCon
         lora=_construct_dataclass(LoraTrainingConfig, lora_payload),
         hub=_construct_dataclass(HubTrainingConfig, hub_payload),
     )
+
+
+def _construct_utility_config(payload: Optional[Dict[str, Any]]) -> UtilityConfig:
+    payload = dict(payload or {})
+    relevance_payload = dict(payload.pop("relevance", {}) or {})
+    scale_payload = dict(relevance_payload.pop("scale", {}) or {})
+    scale_cfg = _construct_dataclass(UtilityConfig.RelevanceScaleConfig, scale_payload)
+    relevance_cfg = UtilityConfig.RelevanceConfig(
+        **relevance_payload,
+        scale=scale_cfg,
+    )
+    return UtilityConfig(**payload, relevance=relevance_cfg)
 
 
 def _validate_choice(name: str, value: str, allowed: set[str]) -> None:
@@ -308,6 +341,15 @@ def _validate_config(cfg: ExperimentConfig) -> None:
             "hybrid_score_margin_utility",
         },
     )
+    _validate_choice("utility.relevance.mode", cfg.utility.relevance.mode, {"weak", "model", "hybrid"})
+    _validate_choice(
+        "utility.relevance.weak_source",
+        cfg.utility.relevance.weak_source,
+        {"bm25", "dense", "hybrid_rerank"},
+    )
+    _validate_choice("utility.relevance.uncertainty", cfg.utility.relevance.uncertainty, {"margin"})
+    _validate_choice("utility.relevance.qrel_adjustment", cfg.utility.relevance.qrel_adjustment, {"hard_override"})
+    _validate_choice("utility.relevance.scale.mode", cfg.utility.relevance.scale.mode, {"minmax", "explicit_map"})
     _validate_choice("training.finetune_strategy", cfg.training.finetune_strategy.lower(), {"full", "lora"})
     _validate_choice(
         "data.training_format",
@@ -330,6 +372,18 @@ def _validate_config(cfg: ExperimentConfig) -> None:
         raise ValueError("`utility.sample_pairs_per_query` must be -1 (unlimited) or > 0.")
     if cfg.execution.embedding_checkpoint_every_docs <= 0:
         raise ValueError("`execution.embedding_checkpoint_every_docs` must be > 0.")
+    if cfg.utility.relevance.top_k_candidates <= 0:
+        raise ValueError("`utility.relevance.top_k_candidates` must be > 0.")
+    if cfg.utility.relevance.rerank_k <= 0:
+        raise ValueError("`utility.relevance.rerank_k` must be > 0.")
+    if not (0.0 < float(cfg.utility.relevance.high_impact_fraction) <= 1.0):
+        raise ValueError("`utility.relevance.high_impact_fraction` must be in (0, 1].")
+    if cfg.utility.relevance.validation_qids_limit <= 0:
+        raise ValueError("`utility.relevance.validation_qids_limit` must be > 0.")
+    if cfg.utility.relevance.scale.max_label <= cfg.utility.relevance.scale.min_label:
+        raise ValueError("`utility.relevance.scale.max_label` must be greater than `utility.relevance.scale.min_label`.")
+    if cfg.utility.relevance.scale.mode == "explicit_map" and not cfg.utility.relevance.scale.explicit_map:
+        raise ValueError("`utility.relevance.scale.explicit_map` must be provided when scale.mode is `explicit_map`.")
     _validate_choice("utility.aggregate", cfg.utility.aggregate, {"mean"})
 
     if cfg.data.pyterrier_dataset is None:
@@ -378,7 +432,7 @@ def load_config(path: str | Path) -> ExperimentConfig:
         data=_construct_dataclass(DataConfig, raw["data"]),
         model=_construct_dataclass(ModelConfig, raw["model"]),
         profiles=[_construct_dataclass(ProfileConfig, item) for item in raw["profiles"]],
-        utility=_construct_dataclass(UtilityConfig, raw.get("utility", {})),
+        utility=_construct_utility_config(raw.get("utility", {})),
         optimization=_construct_dataclass(OptimizationConfig, raw.get("optimization", {})),
         retrieval=_construct_dataclass(RetrievalConfig, raw.get("retrieval", {})),
         execution=_construct_dataclass(ExecutionConfig, raw.get("execution", {})),
