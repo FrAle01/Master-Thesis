@@ -31,7 +31,7 @@ class PyTerrierLoader:
             pt.init()
         self._pt = pt
         if self.data_cfg.pyterrier_dataset is not None:
-            self._dataset = pt.get_dataset(self.data_cfg.pyterrier_dataset)
+            self._dataset = pt.get_dataset(self.data_cfg.pyterrier_dataset.split("/")[0])
 
     @property
     def pt(self):
@@ -148,6 +148,7 @@ class PyTerrierLoader:
         pt = self.pt
         index_path = self._default_index_path()
         data_properties = index_path / "data.properties"
+        text_fields = [field for field in self.data_cfg.text_fields if str(field).strip()]
 
         # Reuse an existing local Terrier index if present.
         if data_properties.exists() and not self.data_cfg.terrier_index_overwrite:
@@ -157,23 +158,28 @@ class PyTerrierLoader:
             raise RuntimeError(
                 f"No built-in Terrier index is available and no local index was found at {index_path}."
             )
+        if not text_fields:
+            raise ValueError(
+                "data.text_fields must contain at least one non-empty field to build a Terrier index."
+            )
 
         index_path.mkdir(parents=True, exist_ok=True)
 
         meta = self.data_cfg.terrier_meta_lengths or {
             "docno": 64,
-            **{field: 4096 for field in self.data_cfg.text_fields},
+            **{field: 4096 for field in text_fields},
         }
 
         indexer = pt.IterDictIndexer(
             str(index_path),
             meta=meta,
+            text_attrs=text_fields,
             threads=self.data_cfg.terrier_index_threads,
             overwrite=self.data_cfg.terrier_index_overwrite,
         )
 
         source_iter = self._build_iterdict_source()
-        index_ref = indexer.index(source_iter, fields=self.data_cfg.text_fields)
+        index_ref = indexer.index(source_iter, fields=text_fields)
         return index_ref
 
     def _resolve_terrier_index(self):
