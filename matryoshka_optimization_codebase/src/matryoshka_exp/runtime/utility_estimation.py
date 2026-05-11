@@ -62,6 +62,8 @@ class UtilityEstimator:
                 "default_docs": int(len(subset_docnos)),
             }
             return utility_pairs_df, utility_table_df
+        else:
+            self.logger.info("Estimating utilities for %d relevance pairs.", len(pair_relevance_df))
 
         sample_columns = [
             "qid",
@@ -191,6 +193,7 @@ class UtilityEstimator:
         top_k = int(self.config.utility.relevance.top_k_candidates)
         rerank_k = int(self.config.utility.relevance.rerank_k)
         self.logger.info("Estimating relevance with mode=%s weak_source=%s", mode, weak_source)
+        self.logger.info("Estimating relevance pairs for %d candidate documents on %s queries.", len(subset_docnos), len(topics))
 
         bm25_candidates = pd.DataFrame(columns=["qid", "docno", "score", "rank"])
         dense_candidates = pd.DataFrame(columns=["qid", "docno", "score", "rank"])
@@ -199,6 +202,7 @@ class UtilityEstimator:
             bm25_candidates = loader.build_bm25_candidates(self.config.retrieval, topics)
             bm25_candidates = bm25_candidates[bm25_candidates["docno"].astype(str).isin(set(map(str, subset_docnos)))].copy()
             bm25_candidates = bm25_candidates.groupby("qid", sort=False).head(top_k)
+            self.logger.info("BM25 candidate generation complete. Candidates: %d", len(bm25_candidates))
 
         if mode in {"weak", "hybrid"} and weak_source in {"dense", "hybrid_rerank"}:
             dense_candidates = build_dense_candidates_with_pyterrier_dr(
@@ -220,7 +224,9 @@ class UtilityEstimator:
                     top_k=top_k,
                     adapter=adapter,
                 )
+            self.logger.info("Dense candidate generation complete. Candidates: %d", len(dense_candidates))
 
+        self.logger.info("Candidate generation complete. BM25 candidates: %d Dense candidates: %d", len(bm25_candidates), len(dense_candidates))
         if mode == "weak":
             if weak_source == "bm25":
                 pair_df = estimate_from_candidates(bm25_candidates, source_mode="weak_bm25")

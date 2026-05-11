@@ -5,6 +5,7 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
+import tqdm
 
 from ..models.base import RepresentationProfile
 
@@ -64,11 +65,13 @@ class LagrangianProfileOptimizer:
         lambda_low = self.lambda_low
         dynamic_high = max(1.0, float(np.max(utility_matrix) / max(np.min(cost_vector), 1.0)))
         lambda_high = max(self.lambda_high, dynamic_high)
+        self.logger.info("Starting Lagrangian optimization with lambda_low=%.6f lambda_high=%.6f (dynamic_high=%.6f)", lambda_low, lambda_high, dynamic_high)
+        
         best_assignments = None
         best_cost = None
         best_lambda = 0.0
 
-        for _ in range(self.max_iter):
+        for _ in tqdm(range(self.max_iter), desc="Lagrangian optimization"):
             lam = 0.5 * (lambda_low + lambda_high)
             reduced = utility_matrix - lam * cost_vector[None, :]
             chosen_idx = np.argmax(reduced, axis=1)
@@ -103,7 +106,10 @@ class LagrangianProfileOptimizer:
                 "cost_bytes": assigned_costs.astype(int),
             }
         )
+
         feasible = int(assignments["cost_bytes"].sum()) <= self.budget_bytes
+        self.logger.info("Lagrangian optimization complete. feasible=%s", feasible)
+        
         return OptimizationResult(
             assignments=assignments,
             lambda_star=float(best_lambda),
