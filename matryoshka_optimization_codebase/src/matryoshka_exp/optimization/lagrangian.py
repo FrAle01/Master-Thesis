@@ -5,7 +5,7 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
-import tqdm
+from tqdm import tqdm
 
 from ..models.base import RepresentationProfile
 
@@ -36,6 +36,7 @@ class LagrangianProfileOptimizer:
         tolerance: float,
         lambda_low: float = 0.0,
         lambda_high: float = 1.0,
+        logger=None,
     ):
         self.profiles = profiles
         self.budget_bytes = int(budget_bytes)
@@ -47,6 +48,7 @@ class LagrangianProfileOptimizer:
             raise ValueError("Invalid lambda bounds: require 0 <= lambda_low <= lambda_high.")
         self.profile_names = [p.name for p in profiles]
         self.cost_lookup = {p.name: p.cost_bytes for p in profiles}
+        self.logger = logger
 
     def solve(self, utility_table: pd.DataFrame) -> OptimizationResult:
         required = {"docno", "profile", "utility"}
@@ -63,7 +65,7 @@ class LagrangianProfileOptimizer:
         docnos = pivot.index.to_numpy()
 
         lambda_low = self.lambda_low
-        dynamic_high = max(1.0, float(np.max(utility_matrix) / max(np.min(cost_vector), 1.0)))
+        dynamic_high = max(1e-4, float(np.max(utility_matrix) / max(np.min(cost_vector), 1.0)))
         lambda_high = max(self.lambda_high, dynamic_high)
         self.logger.info("Starting Lagrangian optimization with lambda_low=%.6f lambda_high=%.6f (dynamic_high=%.6f)", lambda_low, lambda_high, dynamic_high)
         
@@ -77,7 +79,7 @@ class LagrangianProfileOptimizer:
             chosen_idx = np.argmax(reduced, axis=1)
             chosen_cost = int(cost_vector[chosen_idx].sum())
 
-            if best_assignments is None or abs(chosen_cost - self.budget_bytes) < abs(best_cost - self.budget_bytes):
+            if best_assignments is None or (abs(chosen_cost - self.budget_bytes) < abs(best_cost - self.budget_bytes) and chosen_cost <= self.budget_bytes):
                 best_assignments = chosen_idx.copy()
                 best_cost = chosen_cost
                 best_lambda = lam
@@ -91,8 +93,11 @@ class LagrangianProfileOptimizer:
 
             if chosen_cost > self.budget_bytes:
                 lambda_low = lam
+                self.logger.debug("Iteration %d: cost=%d exceeds budget, increasing lambda to %.6f", _, chosen_cost, lambda_low)
             else:
                 lambda_high = lam
+                self.logger.debug("Iteration %d: cost=%d within budget, decreasing lambda to %.6f", _, chosen_cost, lambda_high)
+            self.logger.info("Iteration %d: lambda=%.6f, cost=%d, relative_gap=%.6f", _, lam, chosen_cost, relative_gap)
 
         assigned_profiles = [self.profile_names[idx] for idx in best_assignments]
         assigned_utilities = utility_matrix[np.arange(len(docnos)), best_assignments]

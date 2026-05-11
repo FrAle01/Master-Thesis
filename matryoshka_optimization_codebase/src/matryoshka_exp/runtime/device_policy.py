@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Optional
 
 import torch
 
@@ -44,7 +45,7 @@ def resolve_retrieval_device(config) -> str:
     return requested
 
 
-def assert_retrieval_fits_vram(config, required_bytes: int, *, retrieval_device: str) -> None:
+def assert_retrieval_fits_vram(config, required_bytes: int, *, retrieval_device: str, logger: Optional[None]) -> None:
     if retrieval_device != "cuda":
         return
     if not torch.cuda.is_available():
@@ -55,6 +56,14 @@ def assert_retrieval_fits_vram(config, required_bytes: int, *, retrieval_device:
 
     free_bytes, total_bytes = torch.cuda.mem_get_info()
     usable_bytes = int(total_bytes * float(config.execution.retrieval_vram_utilization_limit))
+    logger.info(
+        "Retrieval VRAM check: required_bytes=%d, free_bytes=%d, total_bytes=%d, usable_bytes=%d (utilization_limit=%.2f)",
+        required_bytes,
+        free_bytes,
+        total_bytes,
+        usable_bytes,
+        config.execution.retrieval_vram_utilization_limit,
+    )
 
     if required_bytes > usable_bytes or required_bytes > free_bytes:
         raise RuntimeError(

@@ -45,6 +45,7 @@ class RetrievalPipeline:
                 int(full_assignments["cost_bytes"].sum()),
             ),
             retrieval_device=retrieval_device,
+            logger=self.logger,
         )
 
         retriever = DenseGroupedRetriever(

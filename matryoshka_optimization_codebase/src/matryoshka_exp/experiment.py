@@ -194,6 +194,7 @@ class ExperimentRunner:
             tolerance=self.config.optimization.tolerance,
             lambda_low=self.config.optimization.lambda_low,
             lambda_high=self.config.optimization.lambda_high,
+            logger=self.logger,
         )
         opt_result = optimizer.solve(utility_table_df)
         assignments = opt_result.assignments

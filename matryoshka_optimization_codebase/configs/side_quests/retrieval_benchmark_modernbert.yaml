@@ -15,7 +15,7 @@ models:
     trust_remote_code: false
     normalize: true
 
-  - id: "modernbert_finetuned_local_placeholder"
+  - id: "modernbert_finetuned_local"
     type: "local_model"
     path_or_repo: "outputs/models/finetuned"
     trust_remote_code: false
