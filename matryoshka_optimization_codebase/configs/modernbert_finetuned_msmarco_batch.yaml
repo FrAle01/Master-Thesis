@@ -23,7 +23,7 @@ data:
 model:
   mode: "pretrained"
   backend: "transformers"
-  model_name_or_path: "matryoshka_optimization_codebase/outputs/models/nomic_mrl_msmarco"
+  model_name_or_path: "outputs/models/nomic_mrl_msmarco"
   trust_remote_code: true
   query_prompt: "query: "
   document_prompt: "passage: "
@@ -60,7 +60,7 @@ optimization:
 retrieval:
   mode: "dense_exact"
   top_k: 100
-  candidate_k: 2000
+  candidate_k: 200
   terrier_wmodel: "BM25"
 
 execution:

@@ -31,7 +31,7 @@ class PyTerrierLoader:
             pt.init()
         self._pt = pt
         if self.data_cfg.pyterrier_dataset is not None:
-            self._dataset = pt.get_dataset(self.data_cfg.pyterrier_dataset.split("/")[0])
+            self._dataset = pt.get_dataset(self.data_cfg.pyterrier_dataset)
 
     @property
     def pt(self):
@@ -146,7 +146,7 @@ class PyTerrierLoader:
 
     def _load_or_build_local_index(self):
         pt = self.pt
-        index_path = self._default_index_path()
+        index_path = self._default_index_path().resolve()
         data_properties = index_path / "data.properties"
         text_fields = [field for field in self.data_cfg.text_fields if str(field).strip()]
 
@@ -179,7 +179,7 @@ class PyTerrierLoader:
         )
 
         source_iter = self._build_iterdict_source()
-        index_ref = indexer.index(source_iter, fields=text_fields)
+        index_ref = indexer.index(source_iter)
         return index_ref
 
     def _resolve_terrier_index(self):
