@@ -24,3 +24,19 @@ def calibrate_scores(scores: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.nda
         margin = np.abs(rel - pivot)
     confidence = np.clip(margin, 0.0, 1.0)
     return rel, confidence, 1.0 - confidence
+
+
+def calibrate_rank_log_discount(ranks: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    if ranks.size == 0:
+        return ranks.astype(float), ranks.astype(float), ranks.astype(float)
+    r = np.asarray(ranks, dtype=float)
+    # Discount on 0-based ranks: rank=0 -> 1/log2(2)=1.0
+    rel = 1.0 / np.log2(r + 1.0)
+    rel = np.clip(rel, 0.0, 1.0)
+    margin = np.zeros_like(rel)
+    if rel.size > 1:
+        sorted_rel = np.sort(rel)[::-1]
+        pivot = float(sorted_rel[min(1, len(sorted_rel) - 1)])
+        margin = np.abs(rel - pivot)
+    confidence = np.clip(margin, 0.0, 1.0)
+    return rel, confidence, 1.0 - confidence

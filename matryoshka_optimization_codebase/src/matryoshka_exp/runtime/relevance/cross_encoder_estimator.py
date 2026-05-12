@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from .calibration import calibrate_scores
+from .calibration import calibrate_rank_log_discount, calibrate_scores
 
 
 def cross_encoder_rescore(*, candidates: pd.DataFrame, topics: pd.DataFrame, doc_text_by_docno: dict[str, str], model_name: str) -> pd.DataFrame:
@@ -50,14 +50,18 @@ def cross_encoder_rescore(*, candidates: pd.DataFrame, topics: pd.DataFrame, doc
     return out.loc[:, ["qid", "docno", "score", "rank"]]
 
 
-def estimate_from_cross_scores(candidates: pd.DataFrame, *, source_mode: str) -> pd.DataFrame:
+def estimate_from_cross_scores(candidates: pd.DataFrame, *, source_mode: str, calibration_mode: str = "minmax_score") -> pd.DataFrame:
     if candidates.empty:
         return pd.DataFrame(columns=["qid", "docno", "relevance_estimated", "relevance_final", "confidence", "uncertainty", "source_mode", "is_qrel_overridden"])
 
     rows = []
     for qid, group in candidates.groupby("qid", sort=False):
-        scores = group["score"].to_numpy(dtype=float)
-        rel, conf, unc = calibrate_scores(scores)
+        if calibration_mode == "rank_log_discount":
+            ranks = group["rank"].to_numpy(dtype=float)
+            rel, conf, unc = calibrate_rank_log_discount(ranks)
+        else:
+            scores = group["score"].to_numpy(dtype=float)
+            rel, conf, unc = calibrate_scores(scores)
         for docno, r, c, u in zip(group["docno"].astype(str).tolist(), rel, conf, unc):
             rows.append(
                 {

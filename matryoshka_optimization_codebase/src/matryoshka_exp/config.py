@@ -141,6 +141,7 @@ class UtilityConfig:
     class RelevanceConfig:
         mode: str = "weak"
         weak_source: str = "bm25"
+        calibration: str = "minmax_score"
         cross_encoder_model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
         top_k_candidates: int = 200
         rerank_k: int = 50
@@ -342,13 +343,14 @@ def _validate_config(cfg: ExperimentConfig) -> None:
         },
     )
     _validate_choice("utility.relevance.mode", cfg.utility.relevance.mode, {"weak", "model", "hybrid"})
+    _validate_choice("utility.relevance.calibration", cfg.utility.relevance.calibration, {"minmax_score", "rank_log_discount"})
     _validate_choice(
         "utility.relevance.weak_source",
         cfg.utility.relevance.weak_source,
         {"bm25", "dense", "hybrid_rerank"},
     )
     _validate_choice("utility.relevance.uncertainty", cfg.utility.relevance.uncertainty, {"margin"})
-    _validate_choice("utility.relevance.qrel_adjustment", cfg.utility.relevance.qrel_adjustment, {"hard_override"})
+    _validate_choice("utility.relevance.qrel_adjustment", cfg.utility.relevance.qrel_adjustment, {"hard_override", "relevant_only_to_one"})
     _validate_choice("utility.relevance.scale.mode", cfg.utility.relevance.scale.mode, {"minmax", "explicit_map"})
     _validate_choice("training.finetune_strategy", cfg.training.finetune_strategy.lower(), {"full", "lora"})
     _validate_choice(

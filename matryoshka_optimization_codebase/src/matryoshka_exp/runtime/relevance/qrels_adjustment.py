@@ -29,3 +29,24 @@ def apply_qrels_hard_override(pair_df: pd.DataFrame, qrels: pd.DataFrame, *, lab
     out.loc[judged, "is_qrel_overridden"] = True
     out = out.drop(columns=[label_column])
     return out, int(judged.sum())
+
+
+def apply_qrels_relevant_only_override(
+    pair_df: pd.DataFrame,
+    qrels: pd.DataFrame,
+    *,
+    label_column: str,
+    relevance_threshold: float,
+) -> tuple[pd.DataFrame, int]:
+    q = qrels.loc[:, ["qid", "docno", label_column]].copy()
+    q["qid"] = q["qid"].astype(str)
+    q["docno"] = q["docno"].astype(str)
+    q[label_column] = pd.to_numeric(q[label_column], errors="coerce")
+    q = q.dropna(subset=[label_column])
+
+    out = pair_df.merge(q, on=["qid", "docno"], how="left")
+    judged_relevant = out[label_column] > float(relevance_threshold)
+    out.loc[judged_relevant, "relevance_final"] = 1.0
+    out.loc[judged_relevant, "is_qrel_overridden"] = True
+    out = out.drop(columns=[label_column])
+    return out, int(judged_relevant.sum())

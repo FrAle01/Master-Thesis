@@ -5,7 +5,7 @@ import pandas as pd
 import torch
 from pathlib import Path
 
-from .calibration import calibrate_scores
+from .calibration import calibrate_rank_log_discount, calibrate_scores
 
 
 def build_dense_candidates_with_pyterrier_dr(
@@ -67,13 +67,17 @@ def build_dense_candidates(*, topics: pd.DataFrame, subset_docnos, subset_doc_em
     return pd.DataFrame(rows)
 
 
-def estimate_from_candidates(candidates: pd.DataFrame, *, source_mode: str) -> pd.DataFrame:
+def estimate_from_candidates(candidates: pd.DataFrame, *, source_mode: str, calibration_mode: str = "minmax_score") -> pd.DataFrame:
     if candidates.empty:
         return pd.DataFrame(columns=["qid", "docno", "relevance_estimated", "relevance_final", "confidence", "uncertainty", "source_mode", "is_qrel_overridden"])
     rows = []
     for qid, group in candidates.groupby("qid", sort=False):
-        scores = group["score"].to_numpy(dtype=float)
-        rel, conf, unc = calibrate_scores(scores)
+        if calibration_mode == "rank_log_discount":
+            ranks = group["rank"].to_numpy(dtype=float)
+            rel, conf, unc = calibrate_rank_log_discount(ranks)
+        else:
+            scores = group["score"].to_numpy(dtype=float)
+            rel, conf, unc = calibrate_scores(scores)
         for docno, r, c, u in zip(group["docno"].astype(str).tolist(), rel, conf, unc):
             rows.append(
                 {

@@ -7,10 +7,15 @@ import pandas as pd
 import torch
 from tqdm import tqdm
 
+from ..legacy.score_metrics import (
+    compute_pointwise_utility,
+    hybrid_score_margin_utility,
+    relative_margin_utility,
+)
 from .relevance.base import RELEVANCE_COLUMNS
 from .relevance.cross_encoder_estimator import cross_encoder_rescore, estimate_from_cross_scores
 from .relevance.fusion import merge_refined_scores, select_uncertain_high_impact_pairs
-from .relevance.qrels_adjustment import apply_qrels_hard_override
+from .relevance.qrels_adjustment import apply_qrels_hard_override, apply_qrels_relevant_only_override
 from .relevance.weak_estimators import (
     build_dense_candidates,
     build_dense_candidates_with_pyterrier_dr,
@@ -24,6 +29,68 @@ class UtilityEstimator:
         self.config = config
         self.logger = logger
         self.last_report = {}
+
+    def _compute_score_preservation(
+        self,
+        *,
+        full_scores: np.ndarray,
+        reduced_scores: np.ndarray,
+    ) -> np.ndarray:
+        metric = str(self.config.utility.metric)
+        epsilon = float(self.config.utility.epsilon)
+        alpha = float(self.config.utility.alpha)
+        m_neg = max(1, int(self.config.utility.margin_negatives))
+
+        if metric in {"relative_score_dissimilarity", "absolute_score_utility", "squared_score_utility"}:
+            return np.asarray(
+                compute_pointwise_utility(
+                    metric,
+                    full_scores,
+                    reduced_scores,
+                    epsilon=epsilon,
+                    alpha=alpha,
+                ),
+                dtype=float,
+            )
+
+        if full_scores.size <= 1:
+            # Margin-based metrics are undefined with one candidate; keep neutral preservation.
+            return np.ones_like(full_scores, dtype=float)
+
+        n = int(full_scores.shape[0])
+        full_neg = np.zeros(n, dtype=float)
+        reduced_neg = np.zeros(n, dtype=float)
+        for i in range(n):
+            full_others = np.delete(full_scores, i)
+            reduced_others = np.delete(reduced_scores, i)
+            k = min(m_neg, full_others.size)
+            full_neg[i] = float(np.mean(np.sort(full_others)[-k:]))
+            reduced_neg[i] = float(np.mean(np.sort(reduced_others)[-k:]))
+
+        if metric == "relative_margin_utility":
+            return np.asarray(
+                relative_margin_utility(
+                    full_scores,
+                    full_neg,
+                    reduced_scores,
+                    reduced_neg,
+                    epsilon=epsilon,
+                ),
+                dtype=float,
+            )
+        if metric == "hybrid_score_margin_utility":
+            return np.asarray(
+                hybrid_score_margin_utility(
+                    full_scores,
+                    reduced_scores,
+                    full_neg,
+                    reduced_neg,
+                    alpha=alpha,
+                    epsilon=epsilon,
+                ),
+                dtype=float,
+            )
+        raise ValueError(f"Unsupported utility metric: {metric}")
 
     def estimate_for_subset(
         self,
@@ -52,7 +119,18 @@ class UtilityEstimator:
         )
         if pair_relevance_df.empty:
             self.logger.warning("No relevance pairs available. Returning default utilities.")
-            utility_pairs_df = pd.DataFrame(columns=["qid", "docno", "profile", "full_score", "reduced_score", "utility", *RELEVANCE_COLUMNS[2:]])
+            utility_pairs_df = pd.DataFrame(
+                columns=[
+                    "qid",
+                    "docno",
+                    "profile",
+                    "full_score",
+                    "reduced_score",
+                    "score_preservation",
+                    "utility",
+                    *RELEVANCE_COLUMNS[2:],
+                ]
+            )
             utility_table_df = self._default_utility_table(subset_docnos, profiles, full_profile)
             self.last_report = {
                 "relevance_mode": self.config.utility.relevance.mode,
@@ -71,6 +149,7 @@ class UtilityEstimator:
             "profile",
             "full_score",
             "reduced_score",
+            "score_preservation",
             "utility",
             "relevance_estimated",
             "relevance_final",
@@ -112,10 +191,14 @@ class UtilityEstimator:
 
                 full_scores_np = full_scores.detach().cpu().numpy()
                 reduced_scores_np = reduced_scores.detach().cpu().numpy()
+                preservation_np = self._compute_score_preservation(
+                    full_scores=full_scores_np,
+                    reduced_scores=reduced_scores_np,
+                )
 
-                for docno, s_full, s_red in zip(valid_docnos, full_scores_np, reduced_scores_np):
+                for docno, s_full, s_red, score_pres in zip(valid_docnos, full_scores_np, reduced_scores_np, preservation_np):
                     rel = float(rel_map.get(docno, 0.0))
-                    utility = float(rel * s_red)
+                    utility = float(rel * score_pres)
                     sampled_rows.append(
                         {
                             "qid": str(qid),
@@ -123,6 +206,7 @@ class UtilityEstimator:
                             "profile": profile.name,
                             "full_score": float(s_full),
                             "reduced_score": float(s_red),
+                            "score_preservation": float(score_pres),
                             "utility": utility,
                             "relevance_estimated": float(est_rel_map.get(docno, rel)),
                             "relevance_final": rel,
@@ -190,9 +274,10 @@ class UtilityEstimator:
     ) -> pd.DataFrame:
         mode = str(self.config.utility.relevance.mode)
         weak_source = str(self.config.utility.relevance.weak_source)
+        calibration_mode = str(self.config.utility.relevance.calibration)
         top_k = int(self.config.utility.relevance.top_k_candidates)
         rerank_k = int(self.config.utility.relevance.rerank_k)
-        self.logger.info("Estimating relevance with mode=%s weak_source=%s", mode, weak_source)
+        self.logger.info("Estimating relevance with mode=%s weak_source=%s calibration=%s", mode, weak_source, calibration_mode)
         self.logger.info("Estimating relevance pairs for %d candidate documents on %s queries.", len(subset_docnos), len(topics))
 
         bm25_candidates = pd.DataFrame(columns=["qid", "docno", "score", "rank"])
@@ -229,12 +314,12 @@ class UtilityEstimator:
         self.logger.info("Candidate generation complete. BM25 candidates: %d Dense candidates: %d", len(bm25_candidates), len(dense_candidates))
         if mode == "weak":
             if weak_source == "bm25":
-                pair_df = estimate_from_candidates(bm25_candidates, source_mode="weak_bm25")
+                pair_df = estimate_from_candidates(bm25_candidates, source_mode="weak_bm25", calibration_mode=calibration_mode)
             elif weak_source == "dense":
-                pair_df = estimate_from_candidates(dense_candidates, source_mode="weak_dense")
+                pair_df = estimate_from_candidates(dense_candidates, source_mode="weak_dense", calibration_mode=calibration_mode)
             else:
                 merged = combine_hybrid_candidates(bm25_candidates, dense_candidates, rerank_k=rerank_k)
-                pair_df = estimate_from_candidates(merged, source_mode="weak_hybrid_rerank")
+                pair_df = estimate_from_candidates(merged, source_mode="weak_hybrid_rerank", calibration_mode=calibration_mode)
 
         elif mode == "model":
             # Prefer PyTerrier BM25 candidates as the pipeline retrieval source for model judging.
@@ -252,18 +337,18 @@ class UtilityEstimator:
                 doc_text_by_docno=doc_text,
                 model_name=str(self.config.utility.relevance.cross_encoder_model_name),
             )
-            pair_df = estimate_from_cross_scores(rescored, source_mode="model_cross_encoder")
+            pair_df = estimate_from_cross_scores(rescored, source_mode="model_cross_encoder", calibration_mode=calibration_mode)
 
         elif mode == "hybrid":
             if weak_source == "bm25":
-                weak_pairs = estimate_from_candidates(bm25_candidates, source_mode="hybrid_weak_bm25")
+                weak_pairs = estimate_from_candidates(bm25_candidates, source_mode="hybrid_weak_bm25", calibration_mode=calibration_mode)
                 seed_candidates = bm25_candidates
             elif weak_source == "dense":
-                weak_pairs = estimate_from_candidates(dense_candidates, source_mode="hybrid_weak_dense")
+                weak_pairs = estimate_from_candidates(dense_candidates, source_mode="hybrid_weak_dense", calibration_mode=calibration_mode)
                 seed_candidates = dense_candidates
             else:
                 merged = combine_hybrid_candidates(bm25_candidates, dense_candidates, rerank_k=rerank_k)
-                weak_pairs = estimate_from_candidates(merged, source_mode="hybrid_weak_hybrid_rerank")
+                weak_pairs = estimate_from_candidates(merged, source_mode="hybrid_weak_hybrid_rerank", calibration_mode=calibration_mode)
                 seed_candidates = merged
 
             uncertain = select_uncertain_high_impact_pairs(
@@ -286,18 +371,26 @@ class UtilityEstimator:
                 doc_text_by_docno=doc_text,
                 model_name=str(self.config.utility.relevance.cross_encoder_model_name),
             )
-            refined = estimate_from_cross_scores(rescored, source_mode="hybrid_refined_cross_encoder")
+            refined = estimate_from_cross_scores(rescored, source_mode="hybrid_refined_cross_encoder", calibration_mode=calibration_mode)
             pair_df = merge_refined_scores(weak_pairs, refined, source_mode="hybrid_refined_cross_encoder")
         else:
             raise ValueError(f"Unsupported utility.relevance.mode: {mode}")
 
         label_column = self._resolve_qrels_label_column(qrels)
-        pair_df, n_overrides = apply_qrels_hard_override(
-            pair_df,
-            qrels,
-            label_column=label_column,
-            scale_cfg=self.config.utility.relevance.scale,
-        )
+        if str(self.config.utility.relevance.qrel_adjustment) == "relevant_only_to_one":
+            pair_df, n_overrides = apply_qrels_relevant_only_override(
+                pair_df,
+                qrels,
+                label_column=label_column,
+                relevance_threshold=float(self.config.utility.relevance_threshold),
+            )
+        else:
+            pair_df, n_overrides = apply_qrels_hard_override(
+                pair_df,
+                qrels,
+                label_column=label_column,
+                scale_cfg=self.config.utility.relevance.scale,
+            )
         self.logger.info(
             "Relevance estimation complete. mode=%s pairs=%s overrides=%s",
             mode,
