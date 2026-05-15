@@ -45,7 +45,7 @@ def apply_qrels_relevant_only_override(
     q = q.dropna(subset=[label_column])
 
     out = pair_df.merge(q, on=["qid", "docno"], how="left")
-    judged_relevant = out[label_column] > float(relevance_threshold)
+    judged_relevant = out[label_column] >= float(relevance_threshold)
     out.loc[judged_relevant, "relevance_final"] = 1.0
     out.loc[judged_relevant, "is_qrel_overridden"] = True
     out = out.drop(columns=[label_column])

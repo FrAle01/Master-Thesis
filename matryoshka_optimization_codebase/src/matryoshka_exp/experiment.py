@@ -204,6 +204,7 @@ class ExperimentRunner:
                 "lambda_star": opt_result.lambda_star,
                 "feasible": bool(opt_result.feasible),
                 "total_utility": float(opt_result.total_utility),
+                "total_cost_bytes": int(opt_result.total_cost_bytes),
             },
             self.output_dir / "optimization_result.json",
         )

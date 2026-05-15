@@ -1,5 +1,5 @@
 data:
-  pyterrier_dataset: "irds:msmarco-passage/trec-dl-2019/judged"
+  pyterrier_dataset: "irds:msmarco-passage/trec-dl-2019"
   text_fields: ["text"]
   max_docs: null
   max_queries: null
@@ -23,8 +23,8 @@ data:
 model:
   mode: "pretrained"
   backend: "transformers"
-  model_name_or_path: "ielabgroup/Starbucks-msmarco"
-  trust_remote_code: false
+  model_name_or_path: "outputs/models/nomic_mrl_msmarco"
+  trust_remote_code: true
   query_prompt: "query: "
   document_prompt: "passage: "
   similarity: "dot"
@@ -32,11 +32,11 @@ model:
   pooling: "mean"
 
 profiles:
-  - {name: "p2_d32", layer: 2, dimension: 32, normalize: true}
-  - {name: "p4_d64", layer: 4, dimension: 64, normalize: true}
-  - {name: "p6_d128", layer: 6, dimension: 128, normalize: true}
-  - {name: "p8_d256", layer: 8, dimension: 256, normalize: true}
-  - {name: "p10_d512", layer: 10, dimension: 512, normalize: true}
+  - {name: "d32", layer: 2, dimension: 32, normalize: true}
+  - {name: "d64", layer: 4, dimension: 64, normalize: true}
+  - {name: "d128", layer: 6, dimension: 128, normalize: true}
+  - {name: "d256", layer: 8, dimension: 256, normalize: true}
+  - {name: "d512", layer: 10, dimension: 512, normalize: true}
   - {name: "full", layer: 12, dimension: 768, normalize: true}
 
 utility:
@@ -44,28 +44,32 @@ utility:
   epsilon: 1.0e-6
   alpha: 0.7
   sample_pairs_per_query: -1
+  relevance_threshold: 1.0
   relevance:
     mode: "weak"
     weak_source: "bm25"
+    top_k_candidates: 20000
+    qrel_adjustment: relevant_only_to_one
+    calibration: "rank_log_discount"
 
 optimization:
-  budget_gb: 10.00
+  budget_gb: 8 .00
   algorithm: "lagrangian_dual"
   max_iter: 150
   lambda_low: 0.0
-  lambda_high: 1.0e-4
+  lambda_high: 1.0e-2
   tolerance: 1.0e-3
   mode: "batch"
 
 retrieval:
   mode: "dense_exact"
   top_k: 100
-  candidate_k: 2000
+  candidate_k: 20000
   terrier_wmodel: "BM25"
 
 execution:
   output_dir: "outputs"
-  experiment_name: "starbucks_msmarco_batch"
+  experiment_name: "modernbert_finetuned_msmarco_logrel_bm25"
   device: "cuda"
   dtype: "float16"
   doc_batch_size: 128

@@ -31,7 +31,7 @@ def calibrate_rank_log_discount(ranks: np.ndarray) -> tuple[np.ndarray, np.ndarr
         return ranks.astype(float), ranks.astype(float), ranks.astype(float)
     r = np.asarray(ranks, dtype=float)
     # Discount on 0-based ranks: rank=0 -> 1/log2(2)=1.0
-    rel = 1.0 / np.log2(r + 1.0)
+    rel = 1.0 / np.log2(r + 2.0)
     rel = np.clip(rel, 0.0, 1.0)
     margin = np.zeros_like(rel)
     if rel.size > 1:
