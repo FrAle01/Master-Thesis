@@ -17,19 +17,19 @@ models:
 
   - id: "modernbert_finetuned_local"
     type: "local_model"
-    path_or_repo: "outputs/models/finetuned"
+    path_or_repo: "/outputs/models/nomic_mrl_msmarco"
     trust_remote_code: false
     normalize: true
 
-  - id: "modernbert_lora_placeholder"
-    type: "lora_adapter"
-    base_model: "nomic-ai/modernbert-embed-base"
-    path_or_repo: "outputs/models/lora_adapter"
-    adapter_name: "default"
-    trust_remote_code: false
-    normalize: true
+#  - id: "modernbert_lora_placeholder"
+#    type: "lora_adapter"
+#    base_model: "nomic-ai/modernbert-embed-base"
+#    path_or_repo: "outputs/models/lora_adapter"
+#    adapter_name: "default"
+#    trust_remote_code: false
+#    normalize: true
 
-dimensions: [768, 512, 256]
+dimensions: [768, 512, 256, 128, 64, 32]
 
 retrieval:
   mode: "pyterrier_dr_faiss"
