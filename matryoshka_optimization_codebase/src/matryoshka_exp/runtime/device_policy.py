@@ -56,18 +56,25 @@ def assert_retrieval_fits_vram(config, required_bytes: int, *, retrieval_device:
 
     free_bytes, total_bytes = torch.cuda.mem_get_info()
     usable_bytes = int(total_bytes * float(config.execution.retrieval_vram_utilization_limit))
+    temp_overhead_factor = float(getattr(config.execution, "retrieval_vram_temp_overhead_factor", 1.2))
+    peak_required_bytes = int(required_bytes * temp_overhead_factor)
     logger.info(
-        "Retrieval VRAM check: required_bytes=%d, free_bytes=%d, total_bytes=%d, usable_bytes=%d (utilization_limit=%.2f)",
+        "Retrieval VRAM check: required_bytes=%d, peak_required_bytes=%d, free_bytes=%d, total_bytes=%d, "
+        "usable_bytes=%d (utilization_limit=%.2f, temp_overhead_factor=%.2f)",
         required_bytes,
+        peak_required_bytes,
         free_bytes,
         total_bytes,
         usable_bytes,
         config.execution.retrieval_vram_utilization_limit,
+        temp_overhead_factor,
     )
 
-    if required_bytes > usable_bytes or required_bytes > free_bytes:
+    if peak_required_bytes > usable_bytes or peak_required_bytes > free_bytes:
         raise RuntimeError(
             "Optimized corpus does not fit configured VRAM limits for GPU retrieval: "
-            f"required_bytes={required_bytes}, free_bytes={free_bytes}, total_bytes={total_bytes}, "
-            f"utilization_limit={config.execution.retrieval_vram_utilization_limit}"
+            f"required_bytes={required_bytes}, peak_required_bytes={peak_required_bytes}, "
+            f"free_bytes={free_bytes}, total_bytes={total_bytes}, "
+            f"utilization_limit={config.execution.retrieval_vram_utilization_limit}, "
+            f"temp_overhead_factor={temp_overhead_factor}"
         )

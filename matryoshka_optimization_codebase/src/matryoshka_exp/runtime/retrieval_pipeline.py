@@ -64,13 +64,18 @@ class RetrievalPipeline:
                 full_doc_embeddings,
                 full_assignments,
                 profile_by_name,
-                target_device=retrieval_device,
+                target_device="cpu",
             )
-            full_run = retriever.search_exact(
-                query_ids,
-                full_query_embeddings,
-                full_corpus,
-                verbose=self.config.execution.verbose,
+            if retrieval_device != "cpu":
+                self._move_corpus_to_device(full_corpus, retrieval_device)
+            self._log_materialized_profiles("full", full_corpus)
+            full_run = self._search_exact_with_oom_context(
+                retriever=retriever,
+                query_ids=query_ids,
+                full_query_embeddings=full_query_embeddings,
+                corpus=full_corpus,
+                retrieval_device=retrieval_device,
+                run_label="full",
             )
             if self.config.execution.save_runs:
                 save_df(full_run, self.output_dir / "full_run.parquet")
@@ -82,13 +87,18 @@ class RetrievalPipeline:
                 full_doc_embeddings,
                 assignments,
                 profile_by_name,
-                target_device=retrieval_device,
+                target_device="cpu",
             )
-            opt_run = retriever.search_exact(
-                query_ids,
-                full_query_embeddings,
-                opt_corpus,
-                verbose=self.config.execution.verbose,
+            if retrieval_device != "cpu":
+                self._move_corpus_to_device(opt_corpus, retrieval_device)
+            self._log_materialized_profiles("optimized", opt_corpus)
+            opt_run = self._search_exact_with_oom_context(
+                retriever=retriever,
+                query_ids=query_ids,
+                full_query_embeddings=full_query_embeddings,
+                corpus=opt_corpus,
+                retrieval_device=retrieval_device,
+                run_label="optimized",
             )
             del opt_corpus
             self._empty_cache_if_needed(retrieval_device)
@@ -135,3 +145,55 @@ class RetrievalPipeline:
     def _empty_cache_if_needed(retrieval_device: str) -> None:
         if retrieval_device == "cuda" and torch.cuda.is_available():
             torch.cuda.empty_cache()
+
+    def _move_corpus_to_device(self, corpus, device: str) -> None:
+        for profile_name, matrix in corpus.embeddings_by_profile.items():
+            if str(matrix.device) == device:
+                continue
+            corpus.embeddings_by_profile[profile_name] = matrix.to(device)
+
+    def _log_materialized_profiles(self, run_label: str, corpus) -> None:
+        profiles = sorted(corpus.embeddings_by_profile.keys())
+        self.logger.info(
+            "Dense retrieval [%s]: materialized profiles=%s",
+            run_label,
+            profiles,
+        )
+        for profile_name in profiles:
+            matrix = corpus.embeddings_by_profile[profile_name]
+            doc_count = len(corpus.docnos_by_profile.get(profile_name, []))
+            self.logger.info(
+                "Dense retrieval [%s]: profile=%s docs=%d stacked_shape=%s dtype=%s device=%s",
+                run_label,
+                profile_name,
+                doc_count,
+                tuple(matrix.shape),
+                matrix.dtype,
+                matrix.device,
+            )
+
+    def _search_exact_with_oom_context(
+        self,
+        *,
+        retriever,
+        query_ids,
+        full_query_embeddings,
+        corpus,
+        retrieval_device: str,
+        run_label: str,
+    ):
+        try:
+            return retriever.search_exact(
+                query_ids,
+                full_query_embeddings,
+                corpus,
+                verbose=self.config.execution.verbose,
+            )
+        except torch.OutOfMemoryError as exc:
+            raise RuntimeError(
+                "CUDA OOM during dense exact retrieval "
+                f"({run_label} run). Consider one of: "
+                "`execution.retrieval_device=cpu`, "
+                "`retrieval.mode=pyterrier_candidates`, "
+                "or reducing corpus size/profile dimensions."
+            ) from exc

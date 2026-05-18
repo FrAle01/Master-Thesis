@@ -203,6 +203,7 @@ class ExecutionConfig:
     save_runs: bool = True
     verbose: bool = True
     retrieval_vram_utilization_limit: float = 0.9
+    retrieval_vram_temp_overhead_factor: float = 1.2
     embedding_checkpoint_enabled: bool = True
     embedding_checkpoint_every_docs: int = 1_000_000
     embedding_checkpoint_dir: Optional[str] = None
@@ -374,6 +375,8 @@ def _validate_config(cfg: ExperimentConfig) -> None:
         raise ValueError("`utility.sample_pairs_per_query` must be -1 (unlimited) or > 0.")
     if cfg.execution.embedding_checkpoint_every_docs <= 0:
         raise ValueError("`execution.embedding_checkpoint_every_docs` must be > 0.")
+    if float(cfg.execution.retrieval_vram_temp_overhead_factor) < 1.0:
+        raise ValueError("`execution.retrieval_vram_temp_overhead_factor` must be >= 1.0.")
     if cfg.utility.relevance.top_k_candidates <= 0:
         raise ValueError("`utility.relevance.top_k_candidates` must be > 0.")
     if cfg.utility.relevance.rerank_k <= 0:

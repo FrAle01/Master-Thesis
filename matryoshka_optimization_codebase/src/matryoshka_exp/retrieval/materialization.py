@@ -159,22 +159,24 @@ def materialize_grouped_corpus(
     for docno, full_emb in zip(full_docnos, full_embeddings):
         profile_name = profile_by_docno[docno]
         profile = profiles[profile_name]
-        reduced = full_emb[: profile.dimension].clone().detach()
-        if target_device != "cpu":
-            reduced = reduced.to(target_device)
-        else:
-            reduced = reduced.cpu()
+        reduced = full_emb[: profile.dimension].clone().detach().cpu()
         grouped_docnos[profile_name].append(docno)
         grouped_embs[profile_name].append(reduced)
         lookup[docno] = (profile_name, reduced)
 
+    embeddings_by_profile: Dict[str, torch.Tensor] = {}
+    for profile_name in grouped_docnos.keys():
+        rows = grouped_embs.get(profile_name, [])
+        if rows:
+            profile_matrix = torch.stack(rows, dim=0)
+        else:
+            profile_matrix = torch.empty((0, profiles[profile_name].dimension))
+        if target_device != "cpu":
+            profile_matrix = profile_matrix.to(target_device)
+        embeddings_by_profile[profile_name] = profile_matrix
+
     corpus = EmbeddedCorpus(
         docnos_by_profile={k: v for k, v in grouped_docnos.items()},
-        embeddings_by_profile={
-            k: (
-                torch.stack(v, dim=0) if len(v) else torch.empty((0, profiles[k].dimension), device=target_device)
-            )
-            for k, v in grouped_embs.items()
-        },
+        embeddings_by_profile=embeddings_by_profile,
     )
     return corpus, lookup
