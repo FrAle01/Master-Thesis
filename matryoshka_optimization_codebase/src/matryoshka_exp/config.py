@@ -180,6 +180,7 @@ class RetrievalConfig:
     mode: str = "dense_exact"
     top_k: int = 100
     candidate_k: int = 2000
+    include_bm25_baseline: bool = False
     batch_size_queries: int = 32
     batch_size_docs: int = 256
     use_pyterrier_bm25: bool = True

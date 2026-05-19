@@ -94,8 +94,7 @@ class ExperimentRunner:
             full_query_embeddings,
         )
 
-        full_run = payload["full_run"]
-        opt_run = payload["opt_run"]
+        runs = payload["runs"]
         assignments = payload["assignments"]
         utility_pairs_df = payload["utility_pairs_df"]
         utility_table_df = payload["utility_table_df"]
@@ -109,17 +108,20 @@ class ExperimentRunner:
         save_df(assignments, self.output_dir / "assignments.parquet")
 
         if self.config.execution.save_runs:
-            save_df(full_run, self.output_dir / "full_run.parquet")
-            save_df(opt_run, self.output_dir / "optimized_run.parquet")
+            if "full_embedding" in runs:
+                save_df(runs["full_embedding"], self.output_dir / "full_run.parquet")
+            if "optimized_embedding" in runs:
+                save_df(runs["optimized_embedding"], self.output_dir / "optimized_run.parquet")
 
-        eval_df, full_metrics, opt_metrics = self.evaluation_pipeline.evaluate_with_pyterrier(
+        eval_df, metrics_by_run = self.evaluation_pipeline.evaluate_with_pyterrier(
             loader=loader,
             topics=topics,
             qrels=qrels,
-            full_run=full_run,
-            opt_run=opt_run,
+            runs=runs,
         )
         save_df(eval_df, self.output_dir / "pt_experiment.csv")
+        full_metrics = metrics_by_run.get("full_embedding", {})
+        opt_metrics = metrics_by_run.get("optimized_embedding", {})
 
         memory_summary = {
             "budget_bytes": self.config.budget_bytes_resolved(),
@@ -134,6 +136,7 @@ class ExperimentRunner:
             "lambda_star": opt_result.lambda_star,
             "feasible": opt_result.feasible,
             "optimized_total_utility": opt_result.total_utility,
+            "metrics_by_run": metrics_by_run,
             "full_metrics": full_metrics,
             "optimized_metrics": opt_metrics,
             "num_docs": len(docnos),
@@ -221,7 +224,7 @@ class ExperimentRunner:
             )
             raise InfeasibleOptimizationError(budget_bytes=budget, assigned_cost_bytes=assigned)
 
-        full_run, opt_run = self.retrieval_pipeline.run(
+        runs = self.retrieval_pipeline.run(
             loader=loader,
             adapter=adapter,
             profile_by_name=profile_by_name,
@@ -234,8 +237,7 @@ class ExperimentRunner:
         )
 
         return {
-            "full_run": full_run,
-            "opt_run": opt_run,
+            "runs": runs,
             "assignments": assignments,
             "utility_pairs_df": utility_pairs_df,
             "utility_table_df": utility_table_df,

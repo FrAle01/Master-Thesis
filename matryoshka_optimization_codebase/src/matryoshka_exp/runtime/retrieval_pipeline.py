@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from collections import OrderedDict
+from typing import Dict, List
+
 import pandas as pd
 import torch
 
@@ -27,23 +30,19 @@ class RetrievalPipeline:
         assignments,
         topics,
         full_query_embeddings,
-    ):
+    ) -> Dict[str, pd.DataFrame]:
         retrieval_device = resolve_retrieval_device(self.config)
-
-        full_assignments = pd.DataFrame(
-            {
-                "docno": docnos,
-                "profile": [full_profile.name] * len(docnos),
-                "utility": [1.0] * len(docnos),
-                "cost_bytes": [full_profile.cost_bytes] * len(docnos),
-            }
+        runs_assignments = self._build_run_assignments(
+            docnos=docnos,
+            full_profile=full_profile,
+            profile_by_name=profile_by_name,
+            optimized_assignments=assignments,
         )
+
+        max_required_bytes = max(int(df["cost_bytes"].sum()) for df in runs_assignments.values())
         assert_retrieval_fits_vram(
             self.config,
-            max(
-                int(assignments["cost_bytes"].sum()),
-                int(full_assignments["cost_bytes"].sum()),
-            ),
+            max_required_bytes,
             retrieval_device=retrieval_device,
             logger=self.logger,
         )
@@ -58,88 +57,98 @@ class RetrievalPipeline:
         query_ids = topics["qid"].astype(str).tolist()
         query_emb_by_id = {qid: emb.unsqueeze(0) for qid, emb in zip(query_ids, full_query_embeddings)}
 
-        if self.config.retrieval.mode == "dense_exact":
-            full_corpus, _ = materialize_grouped_corpus(
-                docnos,
-                full_doc_embeddings,
-                full_assignments,
-                profile_by_name,
-                target_device="cpu",
-            )
-            if retrieval_device != "cpu":
-                self._move_corpus_to_device(full_corpus, retrieval_device)
-            self._log_materialized_profiles("full", full_corpus)
-            full_run = self._search_exact_with_oom_context(
-                retriever=retriever,
-                query_ids=query_ids,
-                full_query_embeddings=full_query_embeddings,
-                corpus=full_corpus,
-                retrieval_device=retrieval_device,
-                run_label="full",
-            )
+        runs: Dict[str, pd.DataFrame] = OrderedDict()
+        if self.config.retrieval.include_bm25_baseline:
+            baseline = loader.build_bm25_candidates(self.config.retrieval, topics)
+            runs["bm25_baseline"] = baseline
             if self.config.execution.save_runs:
-                save_df(full_run, self.output_dir / "full_run.parquet")
-            del full_corpus
-            self._empty_cache_if_needed(retrieval_device)
+                save_df(baseline, self.output_dir / "bm25_baseline_run.parquet")
 
-            opt_corpus, _ = materialize_grouped_corpus(
-                docnos,
-                full_doc_embeddings,
-                assignments,
-                profile_by_name,
-                target_device="cpu",
-            )
-            if retrieval_device != "cpu":
-                self._move_corpus_to_device(opt_corpus, retrieval_device)
-            self._log_materialized_profiles("optimized", opt_corpus)
-            opt_run = self._search_exact_with_oom_context(
-                retriever=retriever,
-                query_ids=query_ids,
-                full_query_embeddings=full_query_embeddings,
-                corpus=opt_corpus,
-                retrieval_device=retrieval_device,
-                run_label="optimized",
-            )
-            del opt_corpus
-            self._empty_cache_if_needed(retrieval_device)
-            return full_run, opt_run
+        if self.config.retrieval.mode == "dense_exact":
+            for run_name, run_assignments in runs_assignments.items():
+                corpus, _ = materialize_grouped_corpus(
+                    docnos,
+                    full_doc_embeddings,
+                    run_assignments,
+                    profile_by_name,
+                    target_device="cpu",
+                )
+                if retrieval_device != "cpu":
+                    self._move_corpus_to_device(corpus, retrieval_device)
+                self._log_materialized_profiles(run_name, corpus)
+                run_df = self._search_exact_with_oom_context(
+                    retriever=retriever,
+                    query_ids=query_ids,
+                    full_query_embeddings=full_query_embeddings,
+                    corpus=corpus,
+                    retrieval_device=retrieval_device,
+                    run_label=run_name,
+                )
+                runs[run_name] = run_df
+                if self.config.execution.save_runs:
+                    save_df(run_df, self.output_dir / f"{run_name}.parquet")
+                del corpus
+                self._empty_cache_if_needed(retrieval_device)
+            return runs
 
         candidates = loader.build_bm25_candidates(self.config.retrieval, topics)
-        save_df(candidates, self.output_dir / "bm25_candidates.parquet")
-        _, full_lookup = materialize_grouped_corpus(
-            docnos,
-            full_doc_embeddings,
-            full_assignments,
-            profile_by_name,
-            target_device=retrieval_device,
-        )
-        full_run = retriever.rerank_candidates(
-            candidates,
-            query_emb_by_id,
-            full_lookup,
-            verbose=self.config.execution.verbose,
-        )
         if self.config.execution.save_runs:
-            save_df(full_run, self.output_dir / "full_run.parquet")
-        del full_lookup
-        self._empty_cache_if_needed(retrieval_device)
+            save_df(candidates, self.output_dir / "bm25_candidates.parquet")
 
-        _, opt_lookup = materialize_grouped_corpus(
-            docnos,
-            full_doc_embeddings,
-            assignments,
-            profile_by_name,
-            target_device=retrieval_device,
+        for run_name, run_assignments in runs_assignments.items():
+            _, lookup = materialize_grouped_corpus(
+                docnos,
+                full_doc_embeddings,
+                run_assignments,
+                profile_by_name,
+                target_device=retrieval_device,
+            )
+            run_df = retriever.rerank_candidates(
+                candidates,
+                query_emb_by_id,
+                lookup,
+                verbose=self.config.execution.verbose,
+            )
+            runs[run_name] = run_df
+            if self.config.execution.save_runs:
+                save_df(run_df, self.output_dir / f"{run_name}.parquet")
+            del lookup
+            self._empty_cache_if_needed(retrieval_device)
+        return runs
+
+    def _build_run_assignments(
+        self,
+        *,
+        docnos: List[str],
+        full_profile,
+        profile_by_name,
+        optimized_assignments: pd.DataFrame,
+    ) -> "OrderedDict[str, pd.DataFrame]":
+        runs_assignments: "OrderedDict[str, pd.DataFrame]" = OrderedDict()
+        runs_assignments["full_embedding"] = self._build_uniform_assignments(docnos, full_profile.name, profile_by_name)
+
+        non_full_profiles = sorted(
+            (profile for profile in profile_by_name.values() if profile.name != full_profile.name),
+            key=lambda p: (int(p.dimension), str(p.name)),
         )
-        opt_run = retriever.rerank_candidates(
-            candidates,
-            query_emb_by_id,
-            opt_lookup,
-            verbose=self.config.execution.verbose,
+        for profile in non_full_profiles:
+            run_name = f"profile_{profile.name}"
+            runs_assignments[run_name] = self._build_uniform_assignments(docnos, profile.name, profile_by_name)
+
+        runs_assignments["optimized_embedding"] = optimized_assignments.copy()
+        return runs_assignments
+
+    @staticmethod
+    def _build_uniform_assignments(docnos: List[str], profile_name: str, profile_by_name) -> pd.DataFrame:
+        profile = profile_by_name[profile_name]
+        return pd.DataFrame(
+            {
+                "docno": docnos,
+                "profile": [profile_name] * len(docnos),
+                "utility": [1.0] * len(docnos),
+                "cost_bytes": [profile.cost_bytes] * len(docnos),
+            }
         )
-        del opt_lookup
-        self._empty_cache_if_needed(retrieval_device)
-        return full_run, opt_run
 
     @staticmethod
     def _empty_cache_if_needed(retrieval_device: str) -> None:
