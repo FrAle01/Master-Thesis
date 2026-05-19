@@ -68,6 +68,14 @@ class OutputConfig:
 
 
 @dataclass
+class EmbeddingCacheConfig:
+    enabled: bool = True
+    cache_dir: Optional[str] = None
+    checkpoint_every_batches: int = 10
+    reuse_if_available: bool = True
+
+
+@dataclass
 class BenchmarkConfig:
     dataset: DatasetConfig
     models: List[ModelEntry]
@@ -75,6 +83,7 @@ class BenchmarkConfig:
     retrieval: RetrievalConfig = field(default_factory=RetrievalConfig)
     evaluation: EvaluationConfig = field(default_factory=EvaluationConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
+    embedding_cache: EmbeddingCacheConfig = field(default_factory=EmbeddingCacheConfig)
     seed: int = 13
     device: str = "cuda"
 
@@ -123,6 +132,8 @@ def _validate(cfg: BenchmarkConfig) -> None:
         raise ValueError("`retrieval.top_k` must be > 0")
     if cfg.retrieval.candidate_k <= 0:
         raise ValueError("`retrieval.candidate_k` must be > 0")
+    if cfg.embedding_cache.checkpoint_every_batches <= 0:
+        raise ValueError("`embedding_cache.checkpoint_every_batches` must be > 0")
 
     if cfg.dataset.pyterrier_dataset is None:
         missing = []
@@ -154,6 +165,7 @@ def load_config(path: str | Path) -> BenchmarkConfig:
         retrieval=_dc(RetrievalConfig, raw.get("retrieval")),
         evaluation=_dc(EvaluationConfig, raw.get("evaluation")),
         output=_dc(OutputConfig, raw.get("output")),
+        embedding_cache=_dc(EmbeddingCacheConfig, raw.get("embedding_cache")),
         seed=int(raw.get("seed", 13)),
         device=str(raw.get("device", "cuda")),
     )

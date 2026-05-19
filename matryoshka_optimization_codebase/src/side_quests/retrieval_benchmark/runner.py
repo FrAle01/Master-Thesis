@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from pathlib import Path
+import hashlib
 from typing import Dict, List
 
 import torch
@@ -38,25 +40,31 @@ class BenchmarkRunner:
         query_texts = topics[self.cfg.dataset.topic_column].astype(str).tolist()
 
         resolver = ModelResolver(device=self.device)
+        max_dim = int(max(self.cfg.dimensions))
 
         result_rows: List[Dict] = []
         for model_entry in self.cfg.models:
             loaded = resolver.load(model_entry)
+            doc_embeddings_full = self._load_or_compute_embeddings(
+                loaded=loaded,
+                texts=doc_texts,
+                ids=docnos,
+                is_query=False,
+                batch_size=self.cfg.retrieval.batch_size_docs,
+                dimension=max_dim,
+            )
+            query_embeddings_full = self._load_or_compute_embeddings(
+                loaded=loaded,
+                texts=query_texts,
+                ids=query_ids,
+                is_query=True,
+                batch_size=self.cfg.retrieval.batch_size_queries,
+                dimension=max_dim,
+            )
             for dim in self.cfg.dimensions:
-                doc_embeddings = encode_texts(
-                    loaded,
-                    doc_texts,
-                    is_query=False,
-                    dimension=int(dim),
-                    batch_size=self.cfg.retrieval.batch_size_docs,
-                )
-                query_embeddings = encode_texts(
-                    loaded,
-                    query_texts,
-                    is_query=True,
-                    dimension=int(dim),
-                    batch_size=self.cfg.retrieval.batch_size_queries,
-                )
+                dim = int(dim)
+                doc_embeddings = doc_embeddings_full[:, :dim].contiguous()
+                query_embeddings = query_embeddings_full[:, :dim].contiguous()
 
                 if self.cfg.retrieval.mode == "bm25_rerank":
                     candidates = self.loader.bm25_candidates(self.cfg.retrieval, topics)
@@ -124,3 +132,80 @@ class BenchmarkRunner:
             "num_dimensions": len(self.cfg.dimensions),
             "num_runs": len(result_rows),
         }
+
+    def _cache_root(self) -> Path:
+        if self.cfg.embedding_cache.cache_dir:
+            return Path(self.cfg.embedding_cache.cache_dir)
+        return self.cfg.output_path / "embedding_cache"
+
+    def _cache_key(self, *, model_id: str, ids: List[str], is_query: bool, dim: int) -> str:
+        role = "query" if is_query else "doc"
+        h = hashlib.sha1()
+        for item in ids:
+            h.update(str(item).encode("utf-8"))
+            h.update(b"\n")
+        digest = h.hexdigest()[:12]
+        return f"{model_id}__{role}__dim{dim}__{digest}"
+
+    def _load_or_compute_embeddings(
+        self,
+        *,
+        loaded,
+        texts: List[str],
+        ids: List[str],
+        is_query: bool,
+        batch_size: int,
+        dimension: int,
+    ) -> torch.Tensor:
+        if not self.cfg.embedding_cache.enabled:
+            return encode_texts(
+                loaded,
+                texts,
+                is_query=is_query,
+                dimension=dimension,
+                batch_size=batch_size,
+            )
+
+        root = self._cache_root()
+        root.mkdir(parents=True, exist_ok=True)
+        key = self._cache_key(model_id=loaded.id, ids=ids, is_query=is_query, dim=dimension)
+        final_path = root / f"{key}.pt"
+        ckpt_path = root / f"{key}.ckpt.pt"
+
+        if self.cfg.embedding_cache.reuse_if_available and final_path.exists():
+            payload = torch.load(final_path, map_location="cpu")
+            emb = payload["embeddings"]
+            if len(payload["ids"]) == len(ids):
+                return emb.to(self.device)
+
+        start = 0
+        prefix = None
+        if ckpt_path.exists():
+            payload = torch.load(ckpt_path, map_location="cpu")
+            start = int(payload.get("next_idx", 0))
+            prefix = payload.get("embeddings")
+
+        chunks = []
+        if prefix is not None and prefix.numel() > 0:
+            chunks.append(prefix)
+
+        for batch_no, begin in enumerate(range(start, len(texts), batch_size), start=1):
+            end = min(begin + batch_size, len(texts))
+            cur = encode_texts(
+                loaded,
+                texts[begin:end],
+                is_query=is_query,
+                dimension=dimension,
+                batch_size=batch_size,
+            ).detach().cpu()
+            chunks.append(cur)
+
+            if batch_no % self.cfg.embedding_cache.checkpoint_every_batches == 0:
+                partial = torch.cat(chunks, dim=0) if chunks else torch.empty((0, dimension))
+                torch.save({"next_idx": end, "ids": ids[:end], "embeddings": partial}, ckpt_path)
+
+        full = torch.cat(chunks, dim=0) if chunks else torch.empty((0, dimension))
+        torch.save({"ids": ids, "embeddings": full}, final_path)
+        if ckpt_path.exists():
+            ckpt_path.unlink()
+        return full.to(self.device)

@@ -52,5 +52,11 @@ output:
   output_dir: "outputs/side_quests/retrieval_benchmark"
   run_name: "modernbert_matrix"
 
+embedding_cache:
+  enabled: true
+  cache_dir: null
+  checkpoint_every_batches: 10
+  reuse_if_available: true
+
 device: "cuda"
 seed: 13

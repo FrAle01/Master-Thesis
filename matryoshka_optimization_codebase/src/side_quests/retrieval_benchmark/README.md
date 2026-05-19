@@ -6,6 +6,7 @@ Run:
 
 Notes:
 - Uses PyTerrier for dataset loading and metric evaluation.
+- Matryoshka flow: embeddings are computed once at the maximum requested dimension, then smaller dimensions are obtained by vector truncation (`[:dim]`).
 - Retrieval modes:
   - `pyterrier_dr_faiss` (default): `pyterrier_dr`-gated dense retrieval with FAISS indexing/search.
   - `dense_exact`: exact dense scoring.
@@ -16,3 +17,6 @@ Notes:
   - `require_gpu: true` enforces GPU-only retrieval.
   - `GpuIndexFlatIP` is built directly on GPU for the direct FAISS path (no CPU index handoff).
   - If backend setup fails and `fallback_to_exact_on_backend_error: false`, the run fails fast.
+- Embedding cache/checkpoints:
+  - `embedding_cache.reuse_if_available: true` reuses saved full embeddings.
+  - `embedding_cache.checkpoint_every_batches` writes resumable partial checkpoints during long encoding.
