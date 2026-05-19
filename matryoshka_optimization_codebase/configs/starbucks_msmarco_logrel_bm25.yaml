@@ -1,5 +1,5 @@
 data:
-  pyterrier_dataset: "irds:msmarco-passage/trec-dl-2019/judged"
+  pyterrier_dataset: "irds:msmarco-passage/trec-dl-2019"
   text_fields: ["text"]
   max_docs: null
   max_queries: null
@@ -55,7 +55,7 @@ utility:
 optimization:
   budget_gb: 10.00
   algorithm: "lagrangian_dual"
-  max_iter: 150
+  max_iter: 25
   lambda_low: 0.0
   lambda_high: 1.0e-4
   tolerance: 1.0e-3
@@ -64,7 +64,7 @@ optimization:
 retrieval:
   mode: "dense_exact"
   top_k: 100
-  candidate_k: 2000
+  candidate_k: 20000
   terrier_wmodel: "BM25"
 
 execution:

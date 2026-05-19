@@ -32,12 +32,12 @@ model:
   pooling: "mean"
 
 profiles:
-  - {name: "d32", layer: 2, dimension: 32, normalize: true}
-  - {name: "d64", layer: 4, dimension: 64, normalize: true}
-  - {name: "d128", layer: 6, dimension: 128, normalize: true}
-  - {name: "d256", layer: 8, dimension: 256, normalize: true}
-  - {name: "d512", layer: 10, dimension: 512, normalize: true}
-  - {name: "full", layer: 12, dimension: 768, normalize: true}
+  - {name: "d32", dimension: 32, normalize: true}
+  - {name: "d64", dimension: 64, normalize: true}
+  - {name: "d128", dimension: 128, normalize: true}
+  - {name: "d256", dimension: 256, normalize: true}
+  - {name: "d512", dimension: 512, normalize: true}
+  - {name: "full", dimension: 768, normalize: true}
 
 utility:
   metric: "relative_score_dissimilarity"
@@ -53,9 +53,9 @@ utility:
     calibration: "rank_log_discount"
 
 optimization:
-  budget_gb: 8 .00
+  budget_gb: 10.00
   algorithm: "lagrangian_dual"
-  max_iter: 150
+  max_iter: 25
   lambda_low: 0.0
   lambda_high: 1.0e-2
   tolerance: 1.0e-3

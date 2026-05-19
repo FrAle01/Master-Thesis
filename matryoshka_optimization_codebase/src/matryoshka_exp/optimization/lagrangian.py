@@ -85,7 +85,7 @@ class LagrangianProfileOptimizer:
                 best_lambda = lam
 
             relative_gap = abs(chosen_cost - self.budget_bytes) / max(self.budget_bytes, 1)
-            if relative_gap <= self.tolerance:
+            if relative_gap <= self.tolerance and chosen_cost <= self.budget_bytes:
                 best_assignments = chosen_idx.copy()
                 best_cost = chosen_cost
                 best_lambda = lam
