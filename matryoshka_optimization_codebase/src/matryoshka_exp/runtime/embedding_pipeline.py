@@ -7,6 +7,7 @@ from typing import Any, Dict, Optional
 
 import torch
 
+from ..results.persistence import ensure_dir
 from ..retrieval.checkpointing import (
     collect_valid_chunks,
     load_manifest,
@@ -250,8 +251,7 @@ class EmbeddingPipeline:
             if self.config.execution.embedding_checkpoint_dir
             else (self.output_dir / "embedding_checkpoints")
         )
-        stage_dir = base_dir / stage
-        stage_dir.mkdir(parents=True, exist_ok=True)
+        stage_dir = ensure_dir(base_dir / stage)
         return {
             "every_docs": int(self.config.execution.embedding_checkpoint_every_docs),
             "resume_mode": str(self.config.execution.embedding_checkpoint_resume),

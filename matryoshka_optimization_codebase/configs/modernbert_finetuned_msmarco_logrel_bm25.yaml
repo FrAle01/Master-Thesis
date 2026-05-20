@@ -77,6 +77,7 @@ execution:
   save_score_pairs: true
   save_runs: true
   verbose: true
+  embedding_checkpoint_dir: outputs/embedding_checkpoints/modernbert_finetuned
 
 training:
   enabled: false

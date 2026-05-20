@@ -130,6 +130,7 @@ class RetrievalPipeline:
         non_full_profiles = sorted(
             (profile for profile in profile_by_name.values() if profile.name != full_profile.name),
             key=lambda p: (int(p.dimension), str(p.name)),
+            reverse=True,
         )
         for profile in non_full_profiles:
             run_name = f"profile_{profile.name}"
