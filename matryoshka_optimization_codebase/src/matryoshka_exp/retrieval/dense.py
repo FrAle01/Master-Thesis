@@ -42,6 +42,13 @@ class DenseGroupedRetriever:
     ) -> pd.DataFrame:
         rows = []
         query_embeddings_full = self._as_device(query_embeddings_full)
+        prepared_doc_cache: Dict[str, torch.Tensor] = {}
+        if self.similarity == "cosine":
+            for profile_name, doc_matrix in corpus.embeddings_by_profile.items():
+                if doc_matrix.numel() == 0:
+                    continue
+                doc_matrix = self._as_device(doc_matrix)
+                prepared_doc_cache[profile_name] = self.adapter.prepare_tensor_for_similarity(doc_matrix)
         for q_offset, qid in enumerate(
             tqdm(query_ids, desc="Dense exact retrieval", disable=not verbose)
         ):
@@ -52,9 +59,19 @@ class DenseGroupedRetriever:
                 if doc_matrix.numel() == 0:
                     continue
                 profile = self.profiles[profile_name]
-                doc_matrix = self._as_device(doc_matrix)
                 q_view = q_full[:, : profile.dimension]
-                scores = self.adapter.similarity(q_view, doc_matrix).squeeze(0)
+                if self.similarity == "cosine":
+                    q_prepared = self.adapter.prepare_tensor_for_similarity(q_view)
+                    doc_matrix = prepared_doc_cache[profile_name]
+                    scores = self.adapter.similarity(
+                        q_prepared,
+                        doc_matrix,
+                        queries_prepared=True,
+                        docs_prepared=True,
+                    ).squeeze(0)
+                else:
+                    doc_matrix = self._as_device(doc_matrix)
+                    scores = self.adapter.similarity(q_view, doc_matrix).squeeze(0)
                 all_scores_t.append(scores)
                 all_docnos.extend(corpus.docnos_by_profile[profile_name])
 
@@ -116,7 +133,17 @@ class DenseGroupedRetriever:
                 q_view = q_full[:, : profile.dimension]
                 doc_batch = torch.stack([corpus_lookup[d][1] for d in docnos], dim=0)
                 doc_batch = self._as_device(doc_batch)
-                scores = self.adapter.similarity(q_view, doc_batch).squeeze(0).detach().cpu().tolist()
+                if self.similarity == "cosine":
+                    q_prepared = self.adapter.prepare_tensor_for_similarity(q_view)
+                    d_prepared = self.adapter.prepare_tensor_for_similarity(doc_batch)
+                    scores = self.adapter.similarity(
+                        q_prepared,
+                        d_prepared,
+                        queries_prepared=True,
+                        docs_prepared=True,
+                    ).squeeze(0).detach().cpu().tolist()
+                else:
+                    scores = self.adapter.similarity(q_view, doc_batch).squeeze(0).detach().cpu().tolist()
                 for d, s in zip(docnos, scores):
                     score_map[d] = float(s)
 

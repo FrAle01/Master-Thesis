@@ -48,12 +48,24 @@ class EncoderAdapter(ABC):
     ) -> torch.Tensor:
         raise NotImplementedError
 
-    def similarity(self, queries: torch.Tensor, docs: torch.Tensor) -> torch.Tensor:
+    def prepare_tensor_for_similarity(self, tensor: torch.Tensor) -> torch.Tensor:
+        if self.model_cfg.similarity == "cosine":
+            return torch.nn.functional.normalize(tensor, p=2, dim=-1)
+        return tensor
+
+    def similarity(
+        self,
+        queries: torch.Tensor,
+        docs: torch.Tensor,
+        *,
+        queries_prepared: bool = False,
+        docs_prepared: bool = False,
+    ) -> torch.Tensor:
         if self.model_cfg.similarity == "dot":
             return queries @ docs.T
         if self.model_cfg.similarity == "cosine":
-            q = torch.nn.functional.normalize(queries, p=2, dim=-1)
-            d = torch.nn.functional.normalize(docs, p=2, dim=-1)
+            q = queries if queries_prepared else self.prepare_tensor_for_similarity(queries)
+            d = docs if docs_prepared else self.prepare_tensor_for_similarity(docs)
             return q @ d.T
         raise ValueError(f"Unsupported similarity: {self.model_cfg.similarity}")
 
