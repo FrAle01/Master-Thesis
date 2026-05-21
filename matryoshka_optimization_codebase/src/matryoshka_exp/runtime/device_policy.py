@@ -30,8 +30,8 @@ def sync_profile_costs_with_observed_dtype(logger, profiles, embeddings: torch.T
     for profile in profiles:
         if profile.cost_is_explicit:
             continue
+        logger.info("Setting cost for profile `%s` based on observed dtype `%s` with %d bytes per value.", profile.name, observed_dtype, bytes_per_value)
         profile.cost_bytes = int(profile.dimension * bytes_per_value)
-
 
 def resolve_retrieval_device(config) -> str:
     requested = config.execution.retrieval_device

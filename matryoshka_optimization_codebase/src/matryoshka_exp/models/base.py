@@ -61,6 +61,10 @@ class EncoderAdapter(ABC):
         queries_prepared: bool = False,
         docs_prepared: bool = False,
     ) -> torch.Tensor:
+        # Ensure matmul operands are co-located to avoid cross-device runtime errors.
+        if queries.device != docs.device or queries.dtype != docs.dtype:
+            queries = queries.to(device=docs.device, dtype=docs.dtype)
+
         if self.model_cfg.similarity == "dot":
             return queries @ docs.T
         if self.model_cfg.similarity == "cosine":

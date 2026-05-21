@@ -103,7 +103,7 @@ class EmbeddingPipeline:
             repo_id=target_repo_id,
             split=self.config.data.hf_embeddings_split,
         )
-        _docnos, computed_embeddings, _ = encode_full_corpus(
+        _docnos, computed_embeddings = encode_full_corpus(
             iter(corpus_records),
             adapter,
             full_profile,

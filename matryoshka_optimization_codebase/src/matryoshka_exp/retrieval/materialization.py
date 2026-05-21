@@ -3,8 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
-
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 import pandas as pd
 import torch
 from tqdm import tqdm
@@ -31,10 +30,10 @@ def encode_full_corpus(
     prompt_name: str = "document",
     verbose: bool = True,
     checkpoint_cfg: Optional[Dict[str, Any]] = None,
-) -> Tuple[List[str], torch.Tensor, pd.DataFrame]:
+) -> Tuple[List[str], torch.Tensor]:
+    # Only return doc ids + embedding matrix to avoid retaining full corpus text in memory.
     docnos: List[str] = []
     texts: List[str] = []
-    metadata_rows = []
     embeddings_batches = []
 
     chunk_doc_target = int((checkpoint_cfg or {}).get("every_docs", 0))
@@ -85,7 +84,6 @@ def encode_full_corpus(
 
     if resumed_doc_count:
         docnos.extend(resume_docnos)
-        metadata_rows.extend({"docno": d, "text": ""} for d in resume_docnos)
         embeddings_batches.append(resume_tensor)
 
     chunk_buffer_docnos: List[str] = []
@@ -119,7 +117,6 @@ def encode_full_corpus(
     for record in tqdm(iterator, desc=f"Encoding documents [{profile.name}]", disable=not verbose):
         docnos.append(record.docno)
         texts.append(record.text)
-        metadata_rows.append({"docno": record.docno, "text": record.text})
         if len(texts) >= batch_size:
             emb = adapter.embed_texts(texts, profile, prompt_name=prompt_name, batch_size=batch_size)
             emb_cpu = emb.cpu()
@@ -139,8 +136,7 @@ def encode_full_corpus(
             chunk_buffer_docnos.extend(docnos[-len(emb_cpu):])
     flush_checkpoint_chunk()
     all_embeddings = torch.cat(embeddings_batches, dim=0) if embeddings_batches else torch.empty((0, profile.dimension))
-    metadata = pd.DataFrame(metadata_rows)
-    return docnos, all_embeddings, metadata
+    return docnos, all_embeddings
 
 
 def materialize_grouped_corpus(
