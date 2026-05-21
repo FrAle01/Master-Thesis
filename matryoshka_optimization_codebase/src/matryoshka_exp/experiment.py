@@ -158,7 +158,7 @@ class ExperimentRunner:
             full_query_embeddings,
         )
 
-        runs = payload["runs"]
+        # runs = payload["runs"]
         assignments = payload["assignments"]
         utility_pairs_df = payload["utility_pairs_df"]
         utility_table_df = payload["utility_table_df"]
@@ -166,27 +166,27 @@ class ExperimentRunner:
         opt_result = payload["opt_result"]
 
         eval_query_ids = eval_topics["qid"].astype(str).tolist()
-        if eval_query_ids != query_ids:
-            self.logger.info("Evaluation query log differs from optimization log; recomputing runs for evaluation queries.")
-            eval_query_texts = eval_topics[self.config.data.topic_column].astype(str).tolist()
-            eval_query_embeddings = adapter.embed_texts(
-                eval_query_texts,
-                full_profile,
-                prompt_name="query",
-                batch_size=self.config.execution.query_batch_size,
-            )
-            self.embedding_pipeline.save_query_embeddings_checkpoint(eval_query_ids, eval_query_embeddings, usage="eval")
-            runs = self.retrieval_pipeline.run(
-                loader=loader,
-                adapter=adapter,
-                profile_by_name=profile_by_name,
-                full_profile=full_profile,
-                docnos=docnos,
-                full_doc_embeddings=payload["full_doc_embeddings"],
-                assignments=assignments,
-                topics=eval_topics,
-                full_query_embeddings=eval_query_embeddings,
-            )
+        # if eval_query_ids != query_ids:
+        self.logger.info("Evaluation query log differs from optimization log; recomputing runs for evaluation queries.")
+        eval_query_texts = eval_topics[self.config.data.topic_column].astype(str).tolist()
+        eval_query_embeddings = adapter.embed_texts(
+            eval_query_texts,
+            full_profile,
+            prompt_name="query",
+            batch_size=self.config.execution.query_batch_size,
+        )
+        self.embedding_pipeline.save_query_embeddings_checkpoint(eval_query_ids, eval_query_embeddings, usage="eval")
+        runs = self.retrieval_pipeline.run(
+            loader=loader,
+            adapter=adapter,
+            profile_by_name=profile_by_name,
+            full_profile=full_profile,
+            docnos=docnos,
+            full_doc_embeddings=payload["full_doc_embeddings"],
+            assignments=assignments,
+            topics=eval_topics,
+            full_query_embeddings=eval_query_embeddings,
+        )
 
         if self.config.execution.save_score_pairs:
             save_df(utility_pairs_df, self.output_dir / "sampled_score_pairs.parquet")
@@ -229,6 +229,7 @@ class ExperimentRunner:
             "optimized_metrics": opt_metrics,
             "num_docs": len(docnos),
             "num_queries": len(query_ids),
+            "num_eval_queries": len(eval_query_ids),
         }
         save_json(summary, self.output_dir / "summary.json")
         self.logger.info("Finished experiment. Summary: %s", summary)
@@ -312,20 +313,20 @@ class ExperimentRunner:
             )
             raise InfeasibleOptimizationError(budget_bytes=budget, assigned_cost_bytes=assigned)
 
-        runs = self.retrieval_pipeline.run(
-            loader=loader,
-            adapter=adapter,
-            profile_by_name=profile_by_name,
-            full_profile=full_profile,
-            docnos=docnos,
-            full_doc_embeddings=full_doc_embeddings,
-            assignments=assignments,
-            topics=topics,
-            full_query_embeddings=full_query_embeddings,
-        )
+        # runs = self.retrieval_pipeline.run(
+        #     loader=loader,
+        #     adapter=adapter,
+        #     profile_by_name=profile_by_name,
+        #     full_profile=full_profile,
+        #     docnos=docnos,
+        #     full_doc_embeddings=full_doc_embeddings,
+        #     assignments=assignments,
+        #     topics=topics,
+        #     full_query_embeddings=full_query_embeddings,
+        # )
 
         return {
-            "runs": runs,
+            # "runs": runs,
             "assignments": assignments,
             "utility_pairs_df": utility_pairs_df,
             "utility_table_df": utility_table_df,
