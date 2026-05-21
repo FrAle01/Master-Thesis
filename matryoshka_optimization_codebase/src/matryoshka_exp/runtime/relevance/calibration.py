@@ -40,3 +40,13 @@ def calibrate_rank_log_discount(ranks: np.ndarray) -> tuple[np.ndarray, np.ndarr
         margin = np.abs(rel - pivot)
     confidence = np.clip(margin, 0.0, 1.0)
     return rel, confidence, 1.0 - confidence
+
+
+def calibrate_constant_one(size: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    if size <= 0:
+        empty = np.array([], dtype=float)
+        return empty, empty, empty
+    rel = np.ones(int(size), dtype=float)
+    confidence = np.ones(int(size), dtype=float)
+    uncertainty = np.zeros(int(size), dtype=float)
+    return rel, confidence, uncertainty

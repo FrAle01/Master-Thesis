@@ -5,7 +5,7 @@ import pandas as pd
 import torch
 from pathlib import Path
 
-from .calibration import calibrate_rank_log_discount, calibrate_scores
+from .calibration import calibrate_constant_one, calibrate_rank_log_discount, calibrate_scores
 
 
 def build_dense_candidates_with_pyterrier_dr(
@@ -72,7 +72,9 @@ def estimate_from_candidates(candidates: pd.DataFrame, *, source_mode: str, cali
         return pd.DataFrame(columns=["qid", "docno", "relevance_estimated", "relevance_final", "confidence", "uncertainty", "source_mode", "is_qrel_overridden"])
     rows = []
     for qid, group in candidates.groupby("qid", sort=False):
-        if calibration_mode == "rank_log_discount":
+        if calibration_mode == "constant_one":
+            rel, conf, unc = calibrate_constant_one(len(group))
+        elif calibration_mode == "rank_log_discount":
             ranks = group["rank"].to_numpy(dtype=float)
             rel, conf, unc = calibrate_rank_log_discount(ranks)
         else:

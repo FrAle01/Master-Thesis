@@ -359,7 +359,11 @@ def _validate_config(cfg: ExperimentConfig) -> None:
         },
     )
     _validate_choice("utility.relevance.mode", cfg.utility.relevance.mode, {"weak", "model", "hybrid"})
-    _validate_choice("utility.relevance.calibration", cfg.utility.relevance.calibration, {"minmax_score", "rank_log_discount"})
+    _validate_choice(
+        "utility.relevance.calibration",
+        cfg.utility.relevance.calibration,
+        {"minmax_score", "rank_log_discount", "constant_one"},
+    )
     _validate_choice(
         "utility.relevance.weak_source",
         cfg.utility.relevance.weak_source,

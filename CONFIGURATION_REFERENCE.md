@@ -139,7 +139,7 @@ Nested `utility.relevance`:
 - `weak_source` (str)
   - Allowed: `bm25`, `dense`, `hybrid_rerank`
 - `calibration` (str)
-  - Allowed: `minmax_score`, `rank_log_discount`
+  - Allowed: `minmax_score`, `rank_log_discount`, `constant_one`
 - `cross_encoder_model_name` (str)
 - `top_k_candidates` (int)
   - Must be `> 0`
