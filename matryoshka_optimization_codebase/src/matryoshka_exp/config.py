@@ -15,6 +15,7 @@ class ProfileConfig:
     layer: Optional[int] = None
     normalize: bool = True
     cost_bytes: Optional[int] = None
+    cost_is_explicit: Optional[bool] = False
 
 
 @dataclass
@@ -328,6 +329,12 @@ def _validate_config(cfg: ExperimentConfig) -> None:
         raise ValueError(
             f"`model.full_profile_name` ({cfg.model.full_profile_name}) is not present in `profiles`."
         )
+    
+    for profile in cfg.profiles:
+        if profile.dimension <= 0:
+            raise ValueError(f"Profile `{profile.name}` has non-positive dimension: {profile.dimension}.")
+        if profile.cost_is_explicit and (profile.cost_bytes is None or profile.cost_bytes <= 0):
+            raise ValueError(f"Profile `{profile.name}` has `cost_is_explicit=true` but invalid `cost_bytes`: {profile.cost_bytes}.")
 
     _validate_choice("model.backend", cfg.model.backend, {"sentence_transformers", "transformers"})
     _validate_choice("model.similarity", cfg.model.similarity, {"dot", "cosine"})
