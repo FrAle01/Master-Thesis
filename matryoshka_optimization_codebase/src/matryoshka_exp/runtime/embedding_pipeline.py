@@ -55,6 +55,35 @@ class EmbeddingPipeline:
                     len(expected_docnos),
                     local_stage,
                 )
+                # Set if an embedding checkpoint was loaded from local storage, which can be used to condition whether to attempt saving to Hugging Face after computation. If we loaded from a local checkpoint, it means the full embeddings were successfully computed at least once, so we can be more confident about attempting to save to Hugging Face even if there were issues with Hugging Face in this run.
+                # if target_repo_id:
+                #     try:
+                #         save_full_embeddings_to_hf(
+                #             repo_id=target_repo_id,
+                #             split=self.config.data.hf_embeddings_split,
+                #             docnos=docnos,
+                #             embeddings=local_embeddings,
+                #             docno_column=self.config.data.hf_embeddings_docno_column,
+                #             vector_column=self.config.data.hf_embeddings_vector_column,
+                #         )
+                #         self.logger.info(
+                #             "Saved %s full document embeddings to Hugging Face dataset `%s` (split `%s`).",
+                #             len(docnos),
+                #             target_repo_id,
+                #             self.config.data.hf_embeddings_split,
+                #         )
+                #     except (ValueError, OSError, RuntimeError) as exc:
+                #         self.logger.warning(
+                #             "Failed to save computed full embeddings to Hugging Face repo `%s` (split `%s`): %s",
+                #             target_repo_id,
+                #             self.config.data.hf_embeddings_split,
+                #             exc,
+                #         )
+                # else:
+                #     self.logger.warning(
+                #         "Skipping Hugging Face embedding persistence because `data.hf_embeddings_repo_id` is not configured."
+                #     )
+
                 return local_embeddings
 
         if source in {"auto", "hf_dataset"}:
