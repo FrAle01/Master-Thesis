@@ -25,11 +25,11 @@ class EmbeddingPipeline:
         self.output_dir = output_dir
         self.logger = logger
 
-    def save_query_embeddings_checkpoint(self, query_ids, query_embeddings: torch.Tensor) -> None:
+    def save_query_embeddings_checkpoint(self, query_ids, query_embeddings: torch.Tensor, usage: str = "opt") -> None:
         from ..results.persistence import save_json
 
-        torch.save(query_embeddings.detach().cpu(), self.output_dir / "query_embeddings.pt")
-        save_json({"query_ids": [str(qid) for qid in query_ids]}, self.output_dir / "query_ids.json")
+        torch.save(query_embeddings.detach().cpu(), self.output_dir / f"query_embeddings{f'_{usage}' if usage != 'opt' else ''}.pt")
+        save_json({"query_ids": [str(qid) for qid in query_ids], "usage": usage}, self.output_dir / f"query_ids{f'_{usage}' if usage != 'opt' else ''}.json")
 
     def load_or_compute_full_doc_embeddings(self, *, adapter, full_profile, docnos, corpus_records):
         source = self.config.data.full_embeddings_source
