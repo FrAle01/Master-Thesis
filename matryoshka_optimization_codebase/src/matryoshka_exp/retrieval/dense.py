@@ -48,7 +48,9 @@ class DenseGroupedRetriever:
                 if doc_matrix.numel() == 0:
                     continue
                 doc_matrix = self._as_device(doc_matrix)
-                prepared_doc_cache[profile_name] = self.adapter.prepare_tensor_for_similarity(doc_matrix)
+                doc_matrix.div_(doc_matrix.norm(dim=1, keepdim=True).clamp_min_(1e-12)) # In-place normalization to save memory, since we'll be reusing these for all queries.
+                corpus.embeddings_by_profile[profile_name] = doc_matrix 
+
         for q_offset, qid in enumerate(
             tqdm(query_ids, desc="Dense exact retrieval", disable=not verbose)
         ):
@@ -62,7 +64,7 @@ class DenseGroupedRetriever:
                 q_view = q_full[:, : profile.dimension]
                 if self.similarity == "cosine":
                     q_prepared = self.adapter.prepare_tensor_for_similarity(q_view)
-                    doc_matrix = prepared_doc_cache[profile_name]
+                    doc_matrix = self._as_device(doc_matrix)
                     scores = self.adapter.similarity(
                         q_prepared,
                         doc_matrix,

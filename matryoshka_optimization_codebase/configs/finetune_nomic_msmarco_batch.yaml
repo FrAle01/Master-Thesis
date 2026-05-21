@@ -34,8 +34,8 @@ model:
   backend: "sentence_transformers"
   model_name_or_path: "nomic-ai/modernbert-embed-base"
   trust_remote_code: true
-  query_prompt: "search_query: "
-  document_prompt: "search_document: "
+  query_prompt: "query: "
+  document_prompt: "passage: "
   similarity: "dot"
   full_profile_name: "full"
 
@@ -95,7 +95,7 @@ training:
   weight_decay: 0.01
   fp16: false
   bf16: true
-  save_steps: 25000
+  save_steps: 7500
   eval_steps: 1000
   logging_steps: 50
   auto_resume_from_last_checkpoint: true

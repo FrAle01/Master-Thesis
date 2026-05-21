@@ -23,7 +23,7 @@ class SbertMatryoshkaFinetuner:
 
     def run(self) -> Path:
         from sentence_transformers import SentenceTransformer, SentenceTransformerTrainer, SentenceTransformerTrainingArguments, losses
-        from sentence_transformers import BatchSamplers
+        from sentence_transformers.training_args import BatchSamplers
 
         cfg = self.config
         tcfg = cfg.training

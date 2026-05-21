@@ -22,12 +22,12 @@ data:
 
 model:
   mode: "pretrained"
-  backend: "transformers"
-  model_name_or_path: "outputs/models/nomic_mrl_msmarco"
+  backend: "sentence_transformers"
+  model_name_or_path: "outputs/models/nomic_mrl_msmarco_old"
   trust_remote_code: true
   query_prompt: "query: "
   document_prompt: "passage: "
-  similarity: "dot"
+  similarity: "cosine"
   full_profile_name: "full"
   pooling: "mean"
 
@@ -69,7 +69,7 @@ retrieval:
 
 execution:
   output_dir: "outputs"
-  experiment_name: "modernbert_finetuned_msmarco_logrel_bm25"
+  experiment_name: "modernbert_finetuned_msmarco_logrel_bm25_cos"
   device: "cuda"
   dtype: "float16"
   doc_batch_size: 128
