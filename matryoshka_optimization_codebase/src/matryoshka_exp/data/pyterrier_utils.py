@@ -43,34 +43,116 @@ class PyTerrierLoader:
         self.ensure_initialized()
         return self._dataset
 
-    def load_topics(self) -> pd.DataFrame:
-        if self.data_cfg.local_topics_path:
-            topics = pd.read_csv(self.data_cfg.local_topics_path, sep="\t")
-            if self.data_cfg.max_queries:
-                topics = topics.head(self.data_cfg.max_queries).copy()
-            return topics
-        topics = (
-            self.dataset.get_topics(self.data_cfg.topics_variant)
-            if self.data_cfg.topics_variant
-            else self.dataset.get_topics()
-        )
+    def _dataset_for(self, pyterrier_dataset: Optional[str]):
+        if pyterrier_dataset is None:
+            return self.dataset
+        return self.pt.get_dataset(pyterrier_dataset)
+
+    def _load_topics_from_source(
+        self,
+        *,
+        local_topics_path: Optional[str],
+        pyterrier_dataset: Optional[str],
+        topics_variant: Optional[str],
+    ) -> pd.DataFrame:
+        if local_topics_path:
+            topics = pd.read_csv(local_topics_path, sep="\t")
+        else:
+            dataset = self._dataset_for(pyterrier_dataset)
+            topics = (
+                dataset.get_topics(topics_variant)
+                if topics_variant
+                else dataset.get_topics()
+            )
         if self.data_cfg.max_queries:
             topics = topics.head(self.data_cfg.max_queries).copy()
         return topics
 
-    def load_qrels(self) -> pd.DataFrame:
-        if self.data_cfg.local_qrels_path:
-            qrels = pd.read_csv(self.data_cfg.local_qrels_path, sep="\t")
+    def _load_qrels_from_source(
+        self,
+        *,
+        local_qrels_path: Optional[str],
+        pyterrier_dataset: Optional[str],
+        qrels_variant: Optional[str],
+        topics: Optional[pd.DataFrame] = None,
+    ) -> pd.DataFrame:
+        if local_qrels_path:
+            qrels = pd.read_csv(local_qrels_path, sep="\t")
         else:
+            dataset = self._dataset_for(pyterrier_dataset)
             qrels = (
-                self.dataset.get_qrels(self.data_cfg.qrels_variant)
-                if self.data_cfg.qrels_variant
-                else self.dataset.get_qrels()
+                dataset.get_qrels(qrels_variant)
+                if qrels_variant
+                else dataset.get_qrels()
             )
         if self.data_cfg.max_queries:
-            topics = self.load_topics()
-            qrels = qrels[qrels["qid"].isin(topics["qid"])]
+            topics_for_filter = topics if topics is not None else self.load_topics()
+            qrels = qrels[qrels["qid"].isin(topics_for_filter["qid"])]
         return qrels
+
+    def load_topics(self) -> pd.DataFrame:
+        return self._load_topics_from_source(
+            local_topics_path=self.data_cfg.local_topics_path,
+            pyterrier_dataset=self.data_cfg.pyterrier_dataset,
+            topics_variant=self.data_cfg.topics_variant,
+        )
+
+    def load_qrels(self) -> pd.DataFrame:
+        topics = self.load_topics()
+        return self._load_qrels_from_source(
+            local_qrels_path=self.data_cfg.local_qrels_path,
+            pyterrier_dataset=self.data_cfg.pyterrier_dataset,
+            qrels_variant=self.data_cfg.qrels_variant,
+            topics=topics,
+        )
+
+    def has_eval_overrides(self) -> bool:
+        return any(
+            [
+                bool(self.data_cfg.eval_pyterrier_dataset),
+                bool(self.data_cfg.eval_dataset_provider),
+                bool(self.data_cfg.eval_topics_variant),
+                bool(self.data_cfg.eval_qrels_variant),
+                bool(self.data_cfg.local_eval_topics_path),
+                bool(self.data_cfg.local_eval_qrels_path),
+            ]
+        )
+
+    def eval_override_fallback_warnings(self) -> List[str]:
+        warnings: List[str] = []
+        if self.data_cfg.eval_pyterrier_dataset and not (self.data_cfg.eval_topics_variant or self.data_cfg.local_eval_topics_path):
+            warnings.append(
+                "eval_pyterrier_dataset is set without eval_topics_variant/local_eval_topics_path; using dataset default topics."
+            )
+        if self.data_cfg.eval_pyterrier_dataset and not (self.data_cfg.eval_qrels_variant or self.data_cfg.local_eval_qrels_path):
+            warnings.append(
+                "eval_pyterrier_dataset is set without eval_qrels_variant/local_eval_qrels_path; using dataset default qrels."
+            )
+        if self.data_cfg.local_eval_topics_path and not self.data_cfg.local_eval_qrels_path:
+            warnings.append("local_eval_topics_path is set but local_eval_qrels_path is not; qrels will fall back to dataset source.")
+        if self.data_cfg.local_eval_qrels_path and not self.data_cfg.local_eval_topics_path:
+            warnings.append("local_eval_qrels_path is set but local_eval_topics_path is not; topics will fall back to dataset source.")
+        return warnings
+
+    def load_eval_topics(self) -> pd.DataFrame:
+        dataset = self.data_cfg.eval_pyterrier_dataset or self.data_cfg.pyterrier_dataset
+        variant = self.data_cfg.eval_topics_variant or self.data_cfg.topics_variant
+        return self._load_topics_from_source(
+            local_topics_path=self.data_cfg.local_eval_topics_path,
+            pyterrier_dataset=dataset,
+            topics_variant=variant,
+        )
+
+    def load_eval_qrels(self, topics: Optional[pd.DataFrame] = None) -> pd.DataFrame:
+        dataset = self.data_cfg.eval_pyterrier_dataset or self.data_cfg.pyterrier_dataset
+        variant = self.data_cfg.eval_qrels_variant or self.data_cfg.qrels_variant
+        topics_frame = topics if topics is not None else self.load_eval_topics()
+        return self._load_qrels_from_source(
+            local_qrels_path=self.data_cfg.local_eval_qrels_path,
+            pyterrier_dataset=dataset,
+            qrels_variant=variant,
+            topics=topics_frame,
+        )
 
     def iter_corpus(self) -> Iterator[CorpusRecord]:
         if self.data_cfg.local_corpus_path:

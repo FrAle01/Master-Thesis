@@ -1,5 +1,7 @@
 data:
   pyterrier_dataset: "irds:msmarco-passage/trec-dl-2019"
+  # eval_pyterrier_dataset: "irds:msmarco-passage/trec-dl-2020"
+  single_log_policy: "split_by_qrels"
   text_fields: ["text"]
   max_docs: null
   max_queries: null

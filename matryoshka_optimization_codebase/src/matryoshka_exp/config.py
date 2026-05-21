@@ -23,6 +23,10 @@ class DataConfig:
     dataset_provider: Optional[str] = None
     topics_variant: Optional[str] = None
     qrels_variant: Optional[str] = None
+    eval_pyterrier_dataset: Optional[str] = None
+    eval_dataset_provider: Optional[str] = None
+    eval_topics_variant: Optional[str] = None
+    eval_qrels_variant: Optional[str] = None
     text_fields: List[str] = field(default_factory=lambda: ["text"])
     max_docs: Optional[int] = None
     max_queries: Optional[int] = None
@@ -31,6 +35,9 @@ class DataConfig:
     local_corpus_path: Optional[str] = None
     local_topics_path: Optional[str] = None
     local_qrels_path: Optional[str] = None
+    local_eval_topics_path: Optional[str] = None
+    local_eval_qrels_path: Optional[str] = None
+    single_log_policy: str = "shared"
     qrels_label_column: str = "label"
     training_dataset_name: Optional[str] = None
     training_local_path: Optional[str] = None
@@ -354,6 +361,7 @@ def _validate_config(cfg: ExperimentConfig) -> None:
     _validate_choice("utility.relevance.uncertainty", cfg.utility.relevance.uncertainty, {"margin"})
     _validate_choice("utility.relevance.qrel_adjustment", cfg.utility.relevance.qrel_adjustment, {"hard_override", "relevant_only_to_one"})
     _validate_choice("utility.relevance.scale.mode", cfg.utility.relevance.scale.mode, {"minmax", "explicit_map"})
+    _validate_choice("data.single_log_policy", cfg.data.single_log_policy, {"shared", "split_by_qrels"})
     _validate_choice("training.finetune_strategy", cfg.training.finetune_strategy.lower(), {"full", "lora"})
     _validate_choice(
         "data.training_format",
