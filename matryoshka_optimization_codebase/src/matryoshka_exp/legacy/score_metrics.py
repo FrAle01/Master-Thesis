@@ -17,9 +17,18 @@ def _clip01(x):
     return np.clip(x, 0.0, 1.0)
 
 
+def _safe_relative_loss(numerator, denominator):
+    # Use float64 and sanitize non-finite values to avoid runtime warnings.
+    num = np.nan_to_num(np.asarray(numerator, dtype=np.float64), nan=np.inf, posinf=np.inf, neginf=np.inf)
+    den = np.nan_to_num(np.asarray(denominator, dtype=np.float64), nan=np.inf, posinf=np.inf, neginf=np.inf)
+    with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
+        loss = np.divide(num, den, out=np.full_like(num, np.inf, dtype=np.float64), where=den > 0.0)
+    return loss
+
+
 def relative_score_dissimilarity(full_scores, reduced_scores, epsilon: float = 1e-6):
-    denom = np.maximum(np.abs(full_scores), epsilon)
-    loss = np.abs(full_scores - reduced_scores) / denom
+    denom = np.maximum(np.abs(np.asarray(full_scores, dtype=np.float64)), epsilon)
+    loss = _safe_relative_loss(np.abs(np.asarray(full_scores, dtype=np.float64) - np.asarray(reduced_scores, dtype=np.float64)), denom)
     return 1.0 - _clip01(loss)
 
 
@@ -35,10 +44,10 @@ def squared_score_utility(full_scores, reduced_scores):
 
 
 def relative_margin_utility(full_pos, full_neg, red_pos, red_neg, epsilon: float = 1e-6):
-    full_margin = full_pos - full_neg
-    red_margin = red_pos - red_neg
+    full_margin = np.asarray(full_pos, dtype=np.float64) - np.asarray(full_neg, dtype=np.float64)
+    red_margin = np.asarray(red_pos, dtype=np.float64) - np.asarray(red_neg, dtype=np.float64)
     denom = np.maximum(np.abs(full_margin), epsilon)
-    loss = np.abs(full_margin - red_margin) / denom
+    loss = _safe_relative_loss(np.abs(full_margin - red_margin), denom)
     return 1.0 - _clip01(loss)
 
 

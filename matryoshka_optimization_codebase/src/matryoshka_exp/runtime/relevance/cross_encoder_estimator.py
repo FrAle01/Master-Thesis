@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from .calibration import calibrate_rank_log_discount, calibrate_scores
+from .calibration import calibrate_constant_one, calibrate_rank_log_discount, calibrate_scores
 
 
 def cross_encoder_rescore(*, candidates: pd.DataFrame, topics: pd.DataFrame, doc_text_by_docno: dict[str, str], model_name: str) -> pd.DataFrame:
@@ -56,7 +56,9 @@ def estimate_from_cross_scores(candidates: pd.DataFrame, *, source_mode: str, ca
 
     rows = []
     for qid, group in candidates.groupby("qid", sort=False):
-        if calibration_mode == "rank_log_discount":
+        if calibration_mode == "constant_one":
+            rel, conf, unc = calibrate_constant_one(len(group))
+        elif calibration_mode == "rank_log_discount":
             ranks = group["rank"].to_numpy(dtype=float)
             rel, conf, unc = calibrate_rank_log_discount(ranks)
         else:
