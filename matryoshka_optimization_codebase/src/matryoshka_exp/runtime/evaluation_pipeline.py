@@ -11,7 +11,7 @@ class EvaluationPipeline:
 
     def evaluate_with_pyterrier(self, *, loader, topics, qrels, runs: Dict[str, pd.DataFrame]):
         pt = loader.pt
-        metrics = ["ndcg_cut_10", "map", "recip_rank", "recall_100"]
+        metrics = ["ndcg_cut_10",  "AP_rel2", "RR_rel2", "recall_100"]
         names = list(runs.keys())
         run_frames = [runs[name] for name in names]
         eval_df = pt.Experiment(
@@ -21,6 +21,10 @@ class EvaluationPipeline:
             eval_metrics=metrics,
             names=names,
             filter_by_qrels=True,
+            baseline=0,
+            test='t',
+            correction = 'b',
+            round=4,
             verbose=False,
         )
         metrics_by_run = {
