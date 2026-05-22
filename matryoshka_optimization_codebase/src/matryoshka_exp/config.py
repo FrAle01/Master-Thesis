@@ -167,6 +167,7 @@ class UtilityConfig:
     sample_pairs_per_query: int = 64
     relevance_threshold: float = 1.0
     seed: int = 13
+    default_utility_profile_name: Optional[str] = None
     relevance: "UtilityConfig.RelevanceConfig" = field(default_factory=lambda: UtilityConfig.RelevanceConfig())
 
 
@@ -328,6 +329,10 @@ def _validate_config(cfg: ExperimentConfig) -> None:
     if cfg.model.full_profile_name not in profile_names:
         raise ValueError(
             f"`model.full_profile_name` ({cfg.model.full_profile_name}) is not present in `profiles`."
+        )
+    if cfg.utility.default_utility_profile_name is not None and cfg.utility.default_utility_profile_name not in profile_names:
+        raise ValueError(
+            f"`utility.default_utility_profile_name` ({cfg.utility.default_utility_profile_name}) is not present in `profiles`."
         )
     
     for profile in cfg.profiles:

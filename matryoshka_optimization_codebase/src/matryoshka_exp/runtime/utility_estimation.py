@@ -239,7 +239,7 @@ class UtilityEstimator:
         aggregated_rows = []
         for docno in subset_docnos:
             for profile in profiles:
-                default_utility = 1.0 if profile.name == full_profile.name else 0.0
+                default_utility = self._default_utility_for_profile(profile.name, full_profile.name)
                 aggregated_rows.append({"docno": str(docno), "profile": profile.name, "utility": default_utility})
         return pd.DataFrame(aggregated_rows, columns=["docno", "profile", "utility"])
 
@@ -254,11 +254,16 @@ class UtilityEstimator:
                     agg = float(np.sum(values))
                     has_any = True
                 else:
-                    agg = 1.0 if profile.name == full_profile.name else 0.0
+                    agg = self._default_utility_for_profile(profile.name, full_profile.name)
                 aggregated_rows.append({"docno": docno, "profile": profile.name, "utility": agg})
             if not has_any:
                 default_count += 1
         return pd.DataFrame(aggregated_rows, columns=["docno", "profile", "utility"]), default_count
+
+    def _default_utility_for_profile(self, profile_name: str, full_profile_name: str) -> float:
+        preferred_profile = self.config.utility.default_utility_profile_name or full_profile_name
+        # TODO: extend this to support custom fallback functions for never-retrieved documents.
+        return 1.0 if profile_name == preferred_profile else 0.0
 
     def _estimate_pair_relevance(
         self,

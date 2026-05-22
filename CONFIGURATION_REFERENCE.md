@@ -132,6 +132,12 @@ Validation/logic constraints:
   - Allowed range: `-1` (unlimited) or any `> 0`
 - `relevance_threshold` (float)
 - `seed` (int)
+- `default_utility_profile_name` (str|null)
+  - If set, must match one `profiles[].name`
+  - Controls default/fallback utility assignment for documents without utility evidence:
+    - selected profile gets utility `1.0`
+    - all other profiles get utility `0.0`
+  - If null, fallback defaults to `model.full_profile_name`
 
 Nested `utility.relevance`:
 - `mode` (str)
