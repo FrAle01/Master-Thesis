@@ -234,7 +234,15 @@ class PyTerrierLoader:
 
         # Reuse an existing local Terrier index if present.
         if data_properties.exists() and not self.data_cfg.terrier_index_overwrite:
-            return pt.IndexRef.of(str(index_path))
+            index_ref = pt.IndexRef.of(str(index_path))
+            index_obj = pt.IndexFactory.of(index_ref)
+            num_fields = int(index_obj.getCollectionStatistics().getNumberOfFields())
+            if num_fields > 0:
+                return index_ref
+            self._logger.warning(
+                "Existing Terrier index at %s has no fields; rebuilding with fields enabled.",
+                index_path,
+            )
 
         if not self.data_cfg.build_local_terrier_index_if_missing:
             raise RuntimeError(
@@ -256,8 +264,9 @@ class PyTerrierLoader:
             str(index_path),
             meta=meta,
             text_attrs=text_fields,
+            fields=True,
             threads=self.data_cfg.terrier_index_threads,
-            overwrite=self.data_cfg.terrier_index_overwrite,
+            overwrite=True,
         )
 
         source_iter = self._build_iterdict_source()
