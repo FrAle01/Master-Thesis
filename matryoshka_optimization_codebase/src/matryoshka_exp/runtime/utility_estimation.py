@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -106,43 +107,6 @@ class UtilityEstimator:
         full_query_embeddings,
         corpus_metadata,
     ):
-        doc_index = {str(docno): i for i, docno in enumerate(subset_docnos)}
-        pair_relevance_df = self._estimate_pair_relevance(
-            loader=loader,
-            adapter=adapter,
-            topics=topics,
-            qrels=qrels,
-            subset_docnos=subset_docnos,
-            subset_doc_embeddings=subset_doc_embeddings,
-            full_query_embeddings=full_query_embeddings,
-            corpus_metadata=corpus_metadata,
-        )
-        if pair_relevance_df.empty:
-            self.logger.warning("No relevance pairs available. Returning default utilities.")
-            utility_pairs_df = pd.DataFrame(
-                columns=[
-                    "qid",
-                    "docno",
-                    "profile",
-                    "full_score",
-                    "reduced_score",
-                    "score_preservation",
-                    "utility",
-                    *RELEVANCE_COLUMNS[2:],
-                ]
-            )
-            utility_table_df = self._default_utility_table(subset_docnos, profiles, full_profile)
-            self.last_report = {
-                "relevance_mode": self.config.utility.relevance.mode,
-                "coverage_pairs": 0,
-                "num_docs": len(subset_docnos),
-                "qrel_overrides": 0,
-                "default_docs": int(len(subset_docnos)),
-            }
-            return utility_pairs_df, utility_table_df
-        else:
-            self.logger.info("Estimating utilities for %d relevance pairs.", len(pair_relevance_df))
-
         sample_columns = [
             "qid",
             "docno",
@@ -158,12 +122,54 @@ class UtilityEstimator:
             "source_mode",
             "is_qrel_overridden",
         ]
-        sampled_rows = []
-        per_doc_profile_utilities = defaultdict(list)
+        doc_index = {str(docno): i for i, docno in enumerate(subset_docnos)}
+        pair_relevance_df = self._estimate_pair_relevance(
+            loader=loader,
+            adapter=adapter,
+            topics=topics,
+            qrels=qrels,
+            subset_docnos=subset_docnos,
+            subset_doc_embeddings=subset_doc_embeddings,
+            full_query_embeddings=full_query_embeddings,
+            corpus_metadata=corpus_metadata,
+        )
+        if pair_relevance_df.empty:
+            self.logger.warning("No relevance pairs available. Returning default utilities.")
+            utility_pairs_df = pd.DataFrame(
+                columns=sample_columns
+            )
+            utility_table_df = self._default_utility_table(subset_docnos, profiles, full_profile)
+            self.last_report = {
+                "relevance_mode": self.config.utility.relevance.mode,
+                "coverage_pairs": 0,
+                "num_docs": len(subset_docnos),
+                "qrel_overrides": 0,
+                "default_docs": int(len(subset_docnos)),
+            }
+            return utility_pairs_df, utility_table_df
+        else:
+            self.logger.info("Estimating utilities for %d relevance pairs.", len(pair_relevance_df))
+
+        stream_pairs_to_disk = bool(self.config.execution.save_score_pairs)
+        pair_writer = None
+        if stream_pairs_to_disk:
+            try:
+                pair_writer = _PairRowsParquetWriter(self.config.output_path / "sampled_score_pairs.parquet", sample_columns)
+            except Exception as exc:
+                self.logger.warning(
+                    "Failed to initialize streaming score-pair writer (%s). Falling back to in-memory collection.",
+                    exc,
+                )
+                stream_pairs_to_disk = False
+        sampled_rows = [] if not stream_pairs_to_disk else None
+        per_doc_profile_utilities_sum = defaultdict(float)
         qid_to_position = {str(qid): i for i, qid in enumerate(topics["qid"].astype(str).tolist())}
 
-        grouped_pairs = list(pair_relevance_df.groupby("qid"))
-        for qid, group in tqdm(grouped_pairs, desc="Estimating per-doc utilities", disable=not self.config.execution.verbose):
+        for qid, group in tqdm(
+            pair_relevance_df.groupby("qid", sort=False),
+            desc="Estimating per-doc utilities",
+            disable=not self.config.execution.verbose,
+        ):
             q_offset = qid_to_position.get(str(qid))
             if q_offset is None:
                 continue
@@ -183,13 +189,13 @@ class UtilityEstimator:
 
             doc_full = subset_doc_embeddings[group_indices]
             full_scores = adapter.similarity(q_full, doc_full).squeeze(0)
+            full_scores_np = full_scores.detach().cpu().numpy()
 
             for profile in profiles:
                 q_reduced = q_full[:, : profile.dimension]
                 doc_reduced = doc_full[:, : profile.dimension]
                 reduced_scores = adapter.similarity(q_reduced, doc_reduced).squeeze(0)
 
-                full_scores_np = full_scores.detach().cpu().numpy()
                 reduced_scores_np = reduced_scores.detach().cpu().numpy()
                 preservation_np = self._compute_score_preservation(
                     full_scores=full_scores_np,
@@ -199,27 +205,33 @@ class UtilityEstimator:
                 for docno, s_full, s_red, score_pres in zip(valid_docnos, full_scores_np, reduced_scores_np, preservation_np):
                     rel = float(rel_map.get(docno, 0.0))
                     utility = float(rel * score_pres)
-                    sampled_rows.append(
-                        {
-                            "qid": str(qid),
-                            "docno": docno,
-                            "profile": profile.name,
-                            "full_score": float(s_full),
-                            "reduced_score": float(s_red),
-                            "score_preservation": float(score_pres),
-                            "utility": utility,
-                            "relevance_estimated": float(est_rel_map.get(docno, rel)),
-                            "relevance_final": rel,
-                            "confidence": float(conf_map.get(docno, 0.0)),
-                            "uncertainty": float(unc_map.get(docno, 1.0)),
-                            "source_mode": str(src_map.get(docno, "unknown")),
-                            "is_qrel_overridden": bool(over_map.get(docno, False)),
-                        }
-                    )
-                    per_doc_profile_utilities[(docno, profile.name)].append(utility)
+                    row = {
+                        "qid": str(qid),
+                        "docno": docno,
+                        "profile": profile.name,
+                        "full_score": float(s_full),
+                        "reduced_score": float(s_red),
+                        "score_preservation": float(score_pres),
+                        "utility": utility,
+                        "relevance_estimated": float(est_rel_map.get(docno, rel)),
+                        "relevance_final": rel,
+                        "confidence": float(conf_map.get(docno, 0.0)),
+                        "uncertainty": float(unc_map.get(docno, 1.0)),
+                        "source_mode": str(src_map.get(docno, "unknown")),
+                        "is_qrel_overridden": bool(over_map.get(docno, False)),
+                    }
+                    if pair_writer is not None:
+                        pair_writer.add_row(row)
+                    else:
+                        sampled_rows.append(row)
+                    per_doc_profile_utilities_sum[(docno, profile.name)] += utility
 
-        utility_pairs_df = pd.DataFrame(sampled_rows, columns=sample_columns)
-        utility_table_df, default_count = self._aggregate_table(subset_docnos, profiles, full_profile, per_doc_profile_utilities)
+        if pair_writer is not None:
+            pair_writer.close()
+            utility_pairs_df = pd.DataFrame(columns=sample_columns)
+        else:
+            utility_pairs_df = pd.DataFrame(sampled_rows, columns=sample_columns)
+        utility_table_df, default_count = self._aggregate_table(subset_docnos, profiles, full_profile, per_doc_profile_utilities_sum)
 
         overrides = int(pair_relevance_df["is_qrel_overridden"].sum()) if not pair_relevance_df.empty else 0
         self.last_report = {
@@ -243,15 +255,15 @@ class UtilityEstimator:
                 aggregated_rows.append({"docno": str(docno), "profile": profile.name, "utility": default_utility})
         return pd.DataFrame(aggregated_rows, columns=["docno", "profile", "utility"])
 
-    def _aggregate_table(self, subset_docnos, profiles, full_profile, per_doc_profile_utilities):
+    def _aggregate_table(self, subset_docnos, profiles, full_profile, per_doc_profile_utilities_sum):
         aggregated_rows = []
         default_count = 0
         for docno in [str(d) for d in subset_docnos]:
             has_any = False
             for profile in profiles:
-                values = per_doc_profile_utilities.get((docno, profile.name), [])
-                if values:
-                    agg = float(np.sum(values))
+                agg_value = per_doc_profile_utilities_sum.get((docno, profile.name))
+                if agg_value is not None:
+                    agg = float(agg_value)
                     has_any = True
                 else:
                     agg = self._default_utility_for_profile(profile.name, full_profile.name)
@@ -411,3 +423,42 @@ class UtilityEstimator:
                 f"Qrels label column `{column}` not found. Available columns: {sorted(qrels.columns.tolist())}"
             )
         return column
+
+
+class _PairRowsParquetWriter:
+    def __init__(self, path: Path, columns: list[str], *, chunk_rows: int = 100_000):
+        self.path = Path(path)
+        self.columns = columns
+        self.chunk_rows = int(chunk_rows)
+        self.buffer = []
+        self.writer = None
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            import pyarrow as pa
+            import pyarrow.parquet as pq
+        except Exception as exc:
+            raise RuntimeError("Streaming score-pair persistence requires `pyarrow`.") from exc
+        self.pa = pa
+        self.pq = pq
+
+    def add_row(self, row: dict) -> None:
+        self.buffer.append(row)
+        if len(self.buffer) >= self.chunk_rows:
+            self._flush()
+
+    def _flush(self) -> None:
+        if not self.buffer:
+            return
+        frame = pd.DataFrame(self.buffer, columns=self.columns)
+        table = self.pa.Table.from_pandas(frame, preserve_index=False)
+        if self.writer is None:
+            self.writer = self.pq.ParquetWriter(str(self.path), table.schema)
+        self.writer.write_table(table)
+        self.buffer.clear()
+
+    def close(self) -> None:
+        self._flush()
+        if self.writer is not None:
+            self.writer.close()
+        elif not self.path.exists():
+            pd.DataFrame(columns=self.columns).to_parquet(self.path, index=False)

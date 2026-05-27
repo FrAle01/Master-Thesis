@@ -188,7 +188,7 @@ class ExperimentRunner:
             full_query_embeddings=eval_query_embeddings,
         )
 
-        if self.config.execution.save_score_pairs:
+        if self.config.execution.save_score_pairs and not utility_pairs_df.empty:
             save_df(utility_pairs_df, self.output_dir / "sampled_score_pairs.parquet")
         save_df(utility_table_df, self.output_dir / "per_document_utility.parquet")
         save_df(pd.DataFrame([asdict(p) for p in profiles]), self.output_dir / "profile_catalog.csv")
@@ -275,7 +275,7 @@ class ExperimentRunner:
             full_query_embeddings=full_query_embeddings,
             corpus_metadata=metadata,
         )
-        if self.config.execution.save_score_pairs:
+        if self.config.execution.save_score_pairs and not utility_pairs_df.empty:
             save_df(utility_pairs_df, self.output_dir / "sampled_score_pairs.parquet")
         save_df(utility_table_df, self.output_dir / "per_document_utility.parquet")
 
