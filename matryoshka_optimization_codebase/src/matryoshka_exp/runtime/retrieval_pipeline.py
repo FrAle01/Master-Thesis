@@ -125,7 +125,7 @@ class RetrievalPipeline:
         optimized_assignments: pd.DataFrame,
     ) -> "OrderedDict[str, pd.DataFrame]":
         runs_assignments: "OrderedDict[str, pd.DataFrame]" = OrderedDict()
-        runs_assignments["full_embedding"] = self._build_uniform_assignments(docnos, full_profile.name, profile_by_name)
+        runs_assignments["full_run"] = self._build_uniform_assignments(docnos, full_profile.name, profile_by_name)
 
         non_full_profiles = sorted(
             (profile for profile in profile_by_name.values() if profile.name != full_profile.name),
@@ -133,10 +133,10 @@ class RetrievalPipeline:
             reverse=True,
         )
         for profile in non_full_profiles:
-            run_name = f"profile_{profile.name}"
+            run_name = f"profile_{profile.name}_run"
             runs_assignments[run_name] = self._build_uniform_assignments(docnos, profile.name, profile_by_name)
 
-        runs_assignments["optimized_embedding"] = optimized_assignments.copy()
+        runs_assignments["optimized_run"] = optimized_assignments.copy()
         return runs_assignments
 
     @staticmethod

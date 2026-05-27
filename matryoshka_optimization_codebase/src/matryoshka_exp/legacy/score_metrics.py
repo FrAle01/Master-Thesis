@@ -29,7 +29,7 @@ def _safe_relative_loss(numerator, denominator):
 def relative_score_dissimilarity(full_scores, reduced_scores, epsilon: float = 1e-6):
     denom = np.maximum(np.abs(np.asarray(full_scores, dtype=np.float64)), epsilon)
     loss = _safe_relative_loss(np.abs(np.asarray(full_scores, dtype=np.float64) - np.asarray(reduced_scores, dtype=np.float64)), denom)
-    return 1.0 - _clip01(loss)
+    return 1.0 - loss # _clip01(loss)
 
 
 def absolute_score_utility(full_scores, reduced_scores):
@@ -48,7 +48,7 @@ def relative_margin_utility(full_pos, full_neg, red_pos, red_neg, epsilon: float
     red_margin = np.asarray(red_pos, dtype=np.float64) - np.asarray(red_neg, dtype=np.float64)
     denom = np.maximum(np.abs(full_margin), epsilon)
     loss = _safe_relative_loss(np.abs(full_margin - red_margin), denom)
-    return 1.0 - _clip01(loss)
+    return 1.0 - loss # _clip01(loss)
 
 
 def hybrid_score_margin_utility(

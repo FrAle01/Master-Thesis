@@ -335,6 +335,9 @@ def _validate_config(cfg: ExperimentConfig) -> None:
             f"`utility.default_utility_profile_name` ({cfg.utility.default_utility_profile_name}) is not present in `profiles`."
         )
     
+    if cfg.utility.default_utility_profile_name is None:
+        cfg.utility.default_utility_profile_name = cfg.model.full_profile_name
+
     for profile in cfg.profiles:
         if profile.dimension <= 0:
             raise ValueError(f"Profile `{profile.name}` has non-positive dimension: {profile.dimension}.")
