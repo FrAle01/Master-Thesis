@@ -17,6 +17,7 @@ from .relevance.base import RELEVANCE_COLUMNS
 from .relevance.cross_encoder_estimator import cross_encoder_rescore, estimate_from_cross_scores
 from .relevance.fusion import merge_refined_scores, select_uncertain_high_impact_pairs
 from .relevance.qrels_adjustment import apply_qrels_hard_override, apply_qrels_relevant_only_override
+from .relevance.tail_utility import build_rbp_residual_tail_utilities
 from .relevance.weak_estimators import (
     build_dense_candidates,
     build_dense_candidates_with_pyterrier_dr,
@@ -138,13 +139,25 @@ class UtilityEstimator:
             utility_pairs_df = pd.DataFrame(
                 columns=sample_columns
             )
-            utility_table_df = self._default_utility_table(subset_docnos, profiles, full_profile)
+            tail_table_df, tail_report = self._build_tail_utility_table(
+                adapter=adapter,
+                profiles=profiles,
+                full_profile=full_profile,
+                topics=topics,
+                subset_docnos=subset_docnos,
+                subset_doc_embeddings=subset_doc_embeddings,
+                full_query_embeddings=full_query_embeddings,
+                unranked_docnos=[str(d) for d in subset_docnos],
+            )
+            tail_lookup = self._tail_lookup(tail_table_df)
+            utility_table_df = self._default_utility_table(subset_docnos, profiles, full_profile, tail_lookup=tail_lookup)
             self.last_report = {
                 "relevance_mode": self.config.utility.relevance.mode,
                 "coverage_pairs": 0,
                 "num_docs": len(subset_docnos),
                 "qrel_overrides": 0,
                 "default_docs": int(len(subset_docnos)),
+                **tail_report,
             }
             return utility_pairs_df, utility_table_df
         else:
@@ -231,7 +244,25 @@ class UtilityEstimator:
             utility_pairs_df = pd.DataFrame(columns=sample_columns)
         else:
             utility_pairs_df = pd.DataFrame(sampled_rows, columns=sample_columns)
-        utility_table_df, default_count = self._aggregate_table(subset_docnos, profiles, full_profile, per_doc_profile_utilities_sum)
+        covered_docnos = set(pair_relevance_df["docno"].astype(str).unique())
+        unranked_docnos = [str(d) for d in subset_docnos if str(d) not in covered_docnos]
+        tail_table_df, tail_report = self._build_tail_utility_table(
+            adapter=adapter,
+            profiles=profiles,
+            full_profile=full_profile,
+            topics=topics,
+            subset_docnos=subset_docnos,
+            subset_doc_embeddings=subset_doc_embeddings,
+            full_query_embeddings=full_query_embeddings,
+            unranked_docnos=unranked_docnos,
+        )
+        utility_table_df, default_count = self._aggregate_table(
+            subset_docnos,
+            profiles,
+            full_profile,
+            per_doc_profile_utilities_sum,
+            tail_lookup=self._tail_lookup(tail_table_df),
+        )
 
         overrides = int(pair_relevance_df["is_qrel_overridden"].sum()) if not pair_relevance_df.empty else 0
         self.last_report = {
@@ -243,19 +274,20 @@ class UtilityEstimator:
             "qrel_overrides": overrides,
             "default_docs": int(default_count),
             "default_doc_fraction": float(default_count / max(1, len(subset_docnos))),
+            **tail_report,
         }
         self.logger.info("Relevance estimation report: %s", self.last_report)
         return utility_pairs_df, utility_table_df
 
-    def _default_utility_table(self, subset_docnos, profiles, full_profile):
+    def _default_utility_table(self, subset_docnos, profiles, full_profile, *, tail_lookup=None):
         aggregated_rows = []
         for docno in subset_docnos:
             for profile in profiles:
-                default_utility = self._default_utility_for_profile(profile.name, full_profile.name)
+                default_utility = self._fallback_utility_for_profile(str(docno), profile.name, full_profile.name, tail_lookup)
                 aggregated_rows.append({"docno": str(docno), "profile": profile.name, "utility": default_utility})
         return pd.DataFrame(aggregated_rows, columns=["docno", "profile", "utility"])
 
-    def _aggregate_table(self, subset_docnos, profiles, full_profile, per_doc_profile_utilities_sum):
+    def _aggregate_table(self, subset_docnos, profiles, full_profile, per_doc_profile_utilities_sum, *, tail_lookup=None):
         aggregated_rows = []
         default_count = 0
         for docno in [str(d) for d in subset_docnos]:
@@ -266,16 +298,87 @@ class UtilityEstimator:
                     agg = float(agg_value)
                     has_any = True
                 else:
-                    agg = self._default_utility_for_profile(profile.name, full_profile.name)
+                    agg = self._fallback_utility_for_profile(docno, profile.name, full_profile.name, tail_lookup)
                 aggregated_rows.append({"docno": docno, "profile": profile.name, "utility": agg})
             if not has_any:
                 default_count += 1
         return pd.DataFrame(aggregated_rows, columns=["docno", "profile", "utility"]), default_count
 
+    def _fallback_utility_for_profile(self, docno: str, profile_name: str, full_profile_name: str, tail_lookup) -> float:
+        if tail_lookup:
+            value = tail_lookup.get((str(docno), profile_name))
+            if value is not None:
+                return float(value)
+        return self._default_utility_for_profile(profile_name, full_profile_name)
+
     def _default_utility_for_profile(self, profile_name: str, full_profile_name: str) -> float:
         preferred_profile = self.config.utility.default_utility_profile_name or full_profile_name
-        # TODO: extend this to support custom fallback functions for never-retrieved documents.
         return 1.0 if profile_name == preferred_profile else 0.0
+
+    def _build_tail_utility_table(
+        self,
+        *,
+        adapter,
+        profiles,
+        full_profile,
+        topics,
+        subset_docnos,
+        subset_doc_embeddings,
+        full_query_embeddings,
+        unranked_docnos,
+    ):
+        if str(self.config.utility.tail.mode) != "rbp_residual_interval":
+            self.logger.info(
+                "Tail utility mode is %s; using static fallback for %d unranked docs.",
+                self.config.utility.tail.mode,
+                len(unranked_docnos),
+            )
+            return pd.DataFrame(columns=["docno", "profile", "utility", "profile_quality"]), self._static_tail_report(unranked_docnos)
+        self.logger.info(
+            "Building RBP residual tail utilities for %d unranked docs with target_residual=%s beta=%s profile_quality=%s.",
+            len(unranked_docnos),
+            self.config.utility.tail.target_residual,
+            self.config.utility.tail.conservatism_beta,
+            self.config.utility.tail.profile_quality,
+        )
+        return_value = build_rbp_residual_tail_utilities(
+            config=self.config,
+            logger=self.logger,
+            adapter=adapter,
+            profiles=profiles,
+            full_profile=full_profile,
+            topics=topics,
+            subset_docnos=subset_docnos,
+            subset_doc_embeddings=subset_doc_embeddings,
+            full_query_embeddings=full_query_embeddings,
+            unranked_docnos=unranked_docnos,
+            score_preservation_fn=self._compute_score_preservation,
+        )
+        return return_value.utility_table, return_value.report
+
+    def _static_tail_report(self, unranked_docnos) -> dict:
+        return {
+            "tail_mode": str(self.config.utility.tail.mode),
+            "tail_unranked_docs": int(len(unranked_docnos)),
+            "tail_target_residual": float(self.config.utility.tail.target_residual),
+            "tail_expected_relevance_per_doc": 0.0,
+            "tail_uncertainty_per_doc": 0.0,
+            "tail_profile_quality": str(self.config.utility.tail.profile_quality),
+            "tail_profile_quality_mean_by_profile": {},
+            "tail_beta": None if self.config.utility.tail.conservatism_beta is None else float(self.config.utility.tail.conservatism_beta),
+            "tail_utility_min": 0.0,
+            "tail_utility_mean": 0.0,
+            "tail_utility_max": 0.0,
+        }
+
+    @staticmethod
+    def _tail_lookup(tail_table_df: pd.DataFrame) -> dict:
+        if tail_table_df.empty:
+            return {}
+        return {
+            (str(row["docno"]), str(row["profile"])): float(row["utility"])
+            for row in tail_table_df.loc[:, ["docno", "profile", "utility"]].to_dict(orient="records")
+        }
 
     def _estimate_pair_relevance(
         self,

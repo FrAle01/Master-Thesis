@@ -169,6 +169,194 @@ Nested `utility.relevance.scale`:
 - `explicit_map` (dict[str,float])
   - Required when `mode=explicit_map`
 
+Nested `utility.tail`:
+- `mode` (str)
+  - Allowed: `static_default`, `rbp_residual_interval`
+  - Default: `static_default`
+- `target_residual` (float)
+  - Must be in `[0,1]`
+  - Default: `0.01`
+- `conservatism_beta` (float|null)
+  - Must be null or `>= 0`
+  - Default: `0.5`
+- `expected_fraction` (float)
+  - Must be in `[0,1]`
+  - Default: `0.5`
+- `max_tail_relevance` (float)
+  - Must be `>= 0`
+  - Default: `0.01`
+- `profile_quality` (str)
+  - Allowed: `cosine_padding`, `sampled_dense_score_preservation`
+  - Default: `cosine_padding`
+- `sampled_quality_queries` (int)
+  - Must be `> 0`
+  - Default: `32`
+- `utility_low` (float)
+  - Default: `0.0`
+
+`utility.tail` controls the fallback utility for documents that never appear in any relevance-estimation ranking. These are documents in:
+
+```text
+D_unranked = D_all \ D_ranked
+```
+
+where `D_ranked` is calculated from `pair_relevance_df.docno.unique()` after BM25/dense/hybrid/model relevance construction.
+
+With `mode=static_default`, the previous behavior is preserved:
+
+```text
+utility(d, profile) = 1.0 if profile == utility.default_utility_profile_name else 0.0
+```
+
+With `mode=rbp_residual_interval`, the fallback uses an RBP-inspired residual interval. It does not use raw `p^K`, because for large candidate depths such as `K=2000` or `K=20000`, ordinary RBP residuals collapse near zero. Instead, `target_residual` is the explicit residual mass reserved for the unseen tail:
+
+```text
+R = utility.tail.target_residual
+expected_mass = R * utility.tail.expected_fraction
+uncertainty_mass = R - expected_mass
+```
+
+The residual is distributed over unranked documents:
+
+```text
+expected_relevance_per_doc =
+    min(utility.tail.max_tail_relevance, expected_mass / |D_unranked|)
+
+uncertainty_per_doc =
+    uncertainty_mass / |D_unranked|
+```
+
+The final utility for an unranked document/profile pair is profile-dependent:
+
+```text
+expected_utility(d,m) =
+    expected_relevance_per_doc * profile_quality(d,m)
+
+uncertainty_utility(d,m) =
+    uncertainty_per_doc * profile_quality(d,m)
+```
+
+If `conservatism_beta` is set:
+
+```text
+utility(d,m) =
+    max(0, expected_utility(d,m) - conservatism_beta * uncertainty_utility(d,m))
+```
+
+If `conservatism_beta: null`:
+
+```text
+utility(d,m) = utility.tail.utility_low
+```
+
+`profile_quality=cosine_padding` computes:
+
+```text
+profile_quality(d,m) =
+    cosine(e_full(d), pad(truncate(e_full(d), m)))
+```
+
+This is cheap, deterministic, and recommended for large runs.
+
+`profile_quality=sampled_dense_score_preservation` samples up to `sampled_quality_queries` query embeddings using `utility.seed`, computes full and reduced dense scores for unranked documents, and reuses the configured `utility.metric` through the internal score-preservation function:
+
+```text
+profile_quality(d,m) =
+    mean_q preservation(score_full(q,d), score_reduced(q,d,m))
+```
+
+This is more retrieval-faithful but can be substantially slower.
+
+Recommended `utility.tail` configurations:
+
+Static baseline / backwards-compatible:
+
+```yaml
+utility:
+  tail:
+    mode: "static_default"
+```
+
+Balanced RBP residual fallback for `top_k_candidates=2000` or `20000`:
+
+```yaml
+utility:
+  tail:
+    mode: "rbp_residual_interval"
+    target_residual: 0.01
+    expected_fraction: 0.5
+    conservatism_beta: 0.5
+    max_tail_relevance: 0.01
+    profile_quality: "cosine_padding"
+    sampled_quality_queries: 32
+    utility_low: 0.0
+```
+
+Very conservative tail fallback:
+
+```yaml
+utility:
+  tail:
+    mode: "rbp_residual_interval"
+    target_residual: 0.001
+    expected_fraction: 0.5
+    conservatism_beta: 0.5
+    max_tail_relevance: 0.005
+    profile_quality: "cosine_padding"
+```
+
+Lower-bound-only fallback:
+
+```yaml
+utility:
+  tail:
+    mode: "rbp_residual_interval"
+    target_residual: 0.01
+    expected_fraction: 0.5
+    conservatism_beta: null
+    utility_low: 0.0
+```
+
+More retrieval-faithful but slower fallback:
+
+```yaml
+utility:
+  tail:
+    mode: "rbp_residual_interval"
+    target_residual: 0.01
+    expected_fraction: 0.5
+    conservatism_beta: 0.5
+    max_tail_relevance: 0.01
+    profile_quality: "sampled_dense_score_preservation"
+    sampled_quality_queries: 32
+```
+
+Important tuning relation:
+
+```text
+expected_fraction > conservatism_beta * (1 - expected_fraction)
+```
+
+Equivalently:
+
+```text
+expected_fraction > conservatism_beta / (1 + conservatism_beta)
+```
+
+If this is not satisfied, the beta-calibrated utility is clipped to zero for all tail documents. For example, with `conservatism_beta=0.5`, `expected_fraction` should be greater than about `0.333` unless the goal is intentionally zero tail utility.
+
+For the current deep-candidate setup (`top_k_candidates=20000`, `retrieval.candidate_k=20000`), start with:
+
+```yaml
+target_residual: 0.01
+expected_fraction: 0.5
+conservatism_beta: 0.5
+max_tail_relevance: 0.01
+profile_quality: "cosine_padding"
+```
+
+Then run ablations with `target_residual: 0.001` and `conservatism_beta: null`.
+
 ### 1.5 `optimization` (OptimizationConfig)
 - `budget_bytes` (int|null)
 - `budget_gb` (float|null)

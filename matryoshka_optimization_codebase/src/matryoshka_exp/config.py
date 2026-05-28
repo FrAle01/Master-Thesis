@@ -159,6 +159,17 @@ class UtilityConfig:
         validation_qids_limit: int = 200
         scale: "UtilityConfig.RelevanceScaleConfig" = field(default_factory=lambda: UtilityConfig.RelevanceScaleConfig())
 
+    @dataclass
+    class TailConfig:
+        mode: str = "static_default"
+        target_residual: float = 0.01
+        conservatism_beta: Optional[float] = 0.5
+        expected_fraction: float = 0.5
+        max_tail_relevance: float = 0.01
+        profile_quality: str = "cosine_padding"
+        sampled_quality_queries: int = 32
+        utility_low: float = 0.0
+
     metric: str = "relative_score_dissimilarity"
     epsilon: float = 1e-6
     alpha: float = 0.7
@@ -169,6 +180,7 @@ class UtilityConfig:
     seed: int = 13
     default_utility_profile_name: Optional[str] = None
     relevance: "UtilityConfig.RelevanceConfig" = field(default_factory=lambda: UtilityConfig.RelevanceConfig())
+    tail: "UtilityConfig.TailConfig" = field(default_factory=lambda: UtilityConfig.TailConfig())
 
 
 @dataclass
@@ -261,13 +273,15 @@ def _construct_training_config(payload: Optional[Dict[str, Any]]) -> TrainingCon
 def _construct_utility_config(payload: Optional[Dict[str, Any]]) -> UtilityConfig:
     payload = dict(payload or {})
     relevance_payload = dict(payload.pop("relevance", {}) or {})
+    tail_payload = dict(payload.pop("tail", {}) or {})
     scale_payload = dict(relevance_payload.pop("scale", {}) or {})
     scale_cfg = _construct_dataclass(UtilityConfig.RelevanceScaleConfig, scale_payload)
     relevance_cfg = UtilityConfig.RelevanceConfig(
         **relevance_payload,
         scale=scale_cfg,
     )
-    return UtilityConfig(**payload, relevance=relevance_cfg)
+    tail_cfg = _construct_dataclass(UtilityConfig.TailConfig, tail_payload)
+    return UtilityConfig(**payload, relevance=relevance_cfg, tail=tail_cfg)
 
 
 def _validate_choice(name: str, value: str, allowed: set[str]) -> None:
@@ -380,6 +394,8 @@ def _validate_config(cfg: ExperimentConfig) -> None:
     _validate_choice("utility.relevance.uncertainty", cfg.utility.relevance.uncertainty, {"margin"})
     _validate_choice("utility.relevance.qrel_adjustment", cfg.utility.relevance.qrel_adjustment, {"hard_override", "relevant_only_to_one"})
     _validate_choice("utility.relevance.scale.mode", cfg.utility.relevance.scale.mode, {"minmax", "explicit_map"})
+    _validate_choice("utility.tail.mode", cfg.utility.tail.mode, {"static_default", "rbp_residual_interval"})
+    _validate_choice("utility.tail.profile_quality", cfg.utility.tail.profile_quality, {"cosine_padding", "sampled_dense_score_preservation"})
     _validate_choice("data.single_log_policy", cfg.data.single_log_policy, {"shared", "split_by_qrels"})
     _validate_choice("training.finetune_strategy", cfg.training.finetune_strategy.lower(), {"full", "lora"})
     _validate_choice(
@@ -417,6 +433,16 @@ def _validate_config(cfg: ExperimentConfig) -> None:
         raise ValueError("`utility.relevance.scale.max_label` must be greater than `utility.relevance.scale.min_label`.")
     if cfg.utility.relevance.scale.mode == "explicit_map" and not cfg.utility.relevance.scale.explicit_map:
         raise ValueError("`utility.relevance.scale.explicit_map` must be provided when scale.mode is `explicit_map`.")
+    if not (0.0 <= float(cfg.utility.tail.target_residual) <= 1.0):
+        raise ValueError("`utility.tail.target_residual` must be in [0, 1].")
+    if not (0.0 <= float(cfg.utility.tail.expected_fraction) <= 1.0):
+        raise ValueError("`utility.tail.expected_fraction` must be in [0, 1].")
+    if cfg.utility.tail.conservatism_beta is not None and float(cfg.utility.tail.conservatism_beta) < 0.0:
+        raise ValueError("`utility.tail.conservatism_beta` must be null or >= 0.")
+    if cfg.utility.tail.sampled_quality_queries <= 0:
+        raise ValueError("`utility.tail.sampled_quality_queries` must be > 0.")
+    if cfg.utility.tail.max_tail_relevance < 0.0:
+        raise ValueError("`utility.tail.max_tail_relevance` must be >= 0.")
     _validate_choice("utility.aggregate", cfg.utility.aggregate, {"mean"})
 
     if cfg.data.pyterrier_dataset is None:
