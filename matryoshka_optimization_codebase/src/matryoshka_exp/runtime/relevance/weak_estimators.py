@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import torch
 from pathlib import Path
+from tqdm import tqdm
 
 from .calibration import calibrate_constant_one, calibrate_rank_log_discount, calibrate_scores
 
@@ -71,7 +72,7 @@ def estimate_from_candidates(candidates: pd.DataFrame, *, source_mode: str, cali
     if candidates.empty:
         return pd.DataFrame(columns=["qid", "docno", "relevance_estimated", "relevance_final", "confidence", "uncertainty", "source_mode", "is_qrel_overridden"])
     rows = []
-    for qid, group in candidates.groupby("qid", sort=False):
+    for qid, group in tqdm(candidates.groupby("qid", sort=False), desc="Estimating relevance from candidate scores", total=len(candidates["qid"].unique())):
         if calibration_mode == "constant_one":
             rel, conf, unc = calibrate_constant_one(len(group))
         elif calibration_mode == "rank_log_discount":

@@ -297,13 +297,23 @@ class PyTerrierLoader:
     def build_bm25_candidates(self, retrieval_cfg: RetrievalConfig, topics: pd.DataFrame) -> pd.DataFrame:
         pt = self.pt
         index = self._resolve_terrier_index()
+        topics_for_retrieval = topics.copy()
+
+        # Prevent Terrier from interpreting "foo:bar" user text as fielded query syntax.
+        query_col = "query" if "query" in topics_for_retrieval.columns else self.data_cfg.topic_column
+        if query_col in topics_for_retrieval.columns:
+            topics_for_retrieval[query_col] = (
+                topics_for_retrieval[query_col]
+                .astype(str)
+                .str.replace(":", " ", regex=False)
+            )
 
         retriever = pt.terrier.Retriever(
             index,
             wmodel=retrieval_cfg.terrier_wmodel,
             num_results=retrieval_cfg.candidate_k,
         )
-        res = retriever.transform(topics)
+        res = retriever.transform(topics_for_retrieval)
 
         expected = {"qid", "docno", "score", "rank"}
         missing = expected.difference(res.columns)
