@@ -23,6 +23,10 @@ and discovers run folders containing at least one known artifact:
 - `full_run.parquet`
 - `optimized_run.parquet`
 - `profile_catalog.csv`
+- `metrics_long.csv`
+- `metrics_wide.csv`
+- `ranking_summary.csv`
+- `run_metadata.json`
 
 Folders under any `models` directory are excluded.
 
