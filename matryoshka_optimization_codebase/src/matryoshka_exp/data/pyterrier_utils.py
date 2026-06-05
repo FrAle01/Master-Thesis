@@ -80,11 +80,20 @@ class PyTerrierLoader:
             qrels = pd.read_csv(local_qrels_path, sep="\t")
         else:
             dataset = self._dataset_for(pyterrier_dataset)
-            qrels = (
-                dataset.get_qrels(qrels_variant)
-                if qrels_variant
-                else dataset.get_qrels()
-            )
+            try:
+                qrels = (
+                    dataset.get_qrels(qrels_variant)
+                    if qrels_variant
+                    else dataset.get_qrels()
+                )
+            except Exception as exc:
+                logging.getLogger("matryoshka_exp").warning(
+                    "Failed to load qrels from dataset %s with variant %s; error: %s",
+                    pyterrier_dataset,
+                    qrels_variant,
+                    exc,
+                )
+                qrels = pd.DataFrame(columns=["qid", "docno", "label"])
         if self.data_cfg.max_queries:
             topics_for_filter = topics if topics is not None else self.load_topics()
             qrels = qrels[qrels["qid"].isin(topics_for_filter["qid"])]

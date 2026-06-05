@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from typing import Dict
+from pathlib import Path
+
 
 import pandas as pd
 from tqdm import tqdm
@@ -261,7 +263,7 @@ class ExperimentRunner:
             expected_dtype_name=self.config.execution.dtype,
             stage="batch document encoding",
         )
-        save_df(metadata, self.output_dir / "corpus_metadata.parquet")
+        save_df(metadata, Path(self.config.execution.output_dir) / "corpus_metadata.parquet")
 
         utility_pairs_df, utility_table_df = self.utility_estimator.estimate_for_subset(
             loader=loader,
