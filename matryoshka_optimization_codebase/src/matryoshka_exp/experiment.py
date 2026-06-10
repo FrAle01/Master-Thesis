@@ -14,7 +14,7 @@ from .data.query_routing import route_dual_source, route_shared, route_split_by_
 from .logging_utils import configure_logging
 from .models.factory import create_encoder
 from .optimization.errors import InfeasibleOptimizationError
-from .optimization.lagrangian import LagrangianProfileOptimizer
+from .optimization.factory import create_optimizer
 from .results.persistence import ensure_dir, save_df, save_json
 from .runtime.device_policy import sync_profile_costs_with_observed_dtype
 from .runtime.embedding_pipeline import EmbeddingPipeline
@@ -281,15 +281,7 @@ class ExperimentRunner:
             save_df(utility_pairs_df, self.output_dir / "sampled_score_pairs.parquet")
         save_df(utility_table_df, self.output_dir / "per_document_utility.parquet")
 
-        optimizer = LagrangianProfileOptimizer(
-            profiles=profiles,
-            budget_bytes=self.config.budget_bytes_resolved(),
-            max_iter=self.config.optimization.max_iter,
-            tolerance=self.config.optimization.tolerance,
-            lambda_low=self.config.optimization.lambda_low,
-            lambda_high=self.config.optimization.lambda_high,
-            logger=self.logger,
-        )
+        optimizer = create_optimizer(self.config, profiles, self.logger)
         opt_result = optimizer.solve(utility_table_df)
         assignments = opt_result.assignments
         save_df(assignments, self.output_dir / "assignments.parquet")
@@ -299,6 +291,16 @@ class ExperimentRunner:
                 "feasible": bool(opt_result.feasible),
                 "total_utility": float(opt_result.total_utility),
                 "total_cost_bytes": int(opt_result.total_cost_bytes),
+                "pre_repair_relaxed_cost_bytes": opt_result.pre_repair_relaxed_cost_bytes,
+                "pre_repair_relaxed_utility": opt_result.pre_repair_relaxed_utility,
+                "unused_budget_bytes": int(opt_result.unused_budget_bytes),
+                "budget_utilization_ratio": float(opt_result.budget_utilization_ratio),
+                "num_upgrades": int(opt_result.num_upgrades),
+                "num_downgrades": int(opt_result.num_downgrades),
+                "search_iterations": int(opt_result.search_iterations),
+                "selected_candidate_origin": opt_result.selected_candidate_origin,
+                "tolerance_reached": bool(opt_result.tolerance_reached),
+                "positive_gain_moves_remaining": bool(opt_result.positive_gain_moves_remaining),
             },
             self.output_dir / "optimization_result.json",
         )

@@ -5,7 +5,7 @@ This codebase implements the experiment discussed in the thesis project:
 - encode documents with **Matryoshka-style embeddings**;
 - support either an **existing checkpoint** (e.g. `ielabgroup/Starbucks-msmarco`) or **fine-tuning** a model on a user-selected dataset;
 - estimate the utility of reduced representations with configurable score-preservation metrics;
-- solve a **document-wise relaxed memory-constrained optimization problem** using a Lagrangian dual;
+- solve a **document-wise memory-constrained optimization problem** using a Lagrangian relaxation;
 - compare retrieval effectiveness against the **full-embedding baseline**;
 - save all intermediate and final artefacts for later plotting and analysis.
 
@@ -170,7 +170,7 @@ This allows the same optimization code to work with:
 
 ### 2) Relaxed optimization
 
-The optimizer solves the Lagrangian dual of:
+The optimizer applies a Lagrangian relaxation to:
 
 ```text
 maximize   sum_i sum_k x_{ik} u_{ik}
@@ -179,13 +179,13 @@ subject to sum_i sum_k x_{ik} c_k <= B
            x_{ik} in [0,1]
 ```
 
-For a fixed lambda, each document independently selects the profile maximizing:
+For a fixed lambda, the relaxed problem decomposes and each document independently selects the profile maximizing:
 
 ```text
 u_{ik} - lambda * c_k
 ```
 
-This provides a simple and efficient document-wise solver. In practice the returned solution is discrete except in ties.
+The multiplier search produces candidate assignments for the relaxed problem. A deterministic repair and upgrade phase then constructs and improves a feasible assignment for the original MCKP.
 
 ### 3) Utility estimation
 

@@ -187,7 +187,7 @@ class UtilityConfig:
 class OptimizationConfig:
     budget_bytes: Optional[int] = None
     budget_gb: Optional[float] = 2.0
-    algorithm: str = "lagrangian_dual"
+    algorithm: str = "lagrangian_relaxation"
     max_iter: int = 64
     tolerance: float = 1e-3
     lambda_low: float = 0.0
