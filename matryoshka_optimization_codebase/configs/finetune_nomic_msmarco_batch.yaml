@@ -58,7 +58,7 @@ utility:
 
 optimization:
   budget_gb: 0.20
-  algorithm: "lagrangian_dual"
+  algorithm: "lagrangian_relaxation"
   max_iter: 64
   tolerance: 1.0e-3
   mode: "batch"

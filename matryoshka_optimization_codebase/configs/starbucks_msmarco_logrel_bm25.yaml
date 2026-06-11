@@ -1,7 +1,11 @@
 data:
+  # pyterrier_dataset: "irds:msmarco-passage/eval/small"
+  # pyterrier_dataset: "irds:msmarco-passage/dev/small"
   pyterrier_dataset: "irds:msmarco-passage/trec-dl-2019"
-  # eval_pyterrier_dataset: "irds:msmarco-passage/trec-dl-2020"
-  single_log_policy: "split_by_qrels"
+  # eval_pyterrier_dataset: "irds:msmarco-passage/trec-dl-2019"
+  eval_pyterrier_dataset: "irds:msmarco-passage/trec-dl-2020"
+  # single_log_policy: "shared" #BANNED
+  # single_log_policy: "split_by_qrels" #BANNED
   text_fields: ["text"]
   max_docs: null
   max_queries: null
@@ -29,9 +33,9 @@ model:
   trust_remote_code: false
   query_prompt: "query: "
   document_prompt: "passage: "
-  similarity: "cosine"
+  similarity: "dot"
   full_profile_name: "full"
-  pooling: "mean"
+  pooling: "cls"
 
 profiles:
   - {name: "p2_d32", layer: 2, dimension: 32, normalize: true}
@@ -46,18 +50,38 @@ utility:
   epsilon: 1.0e-6
   alpha: 0.7
   sample_pairs_per_query: -1
+  default_utility_profile_name: "full"
+  # default_utility_profile_name: "p8_d256"
+  # default_utility_profile_name: "p2_d32"
   relevance_threshold: 1.0
   relevance:
     mode: "weak"
     weak_source: "bm25"
     top_k_candidates: 20000
+    # top_k_candidates: 2000
     qrel_adjustment: relevant_only_to_one
+    # calibration: "constant_one"
     calibration: "rank_log_discount"
+  tail:
+    # mode: "static_default"
+    mode: "rbp_residual_interval"
+    target_residual: 0.05
+    # expected_fraction: 0.25
+    expected_fraction: 0.5
+    # conservatism_beta: 0.25
+    conservatism_beta: 0.5
+    max_tail_relevance: 0.01
+    profile_quality: "cosine_padding"
+    # profile_quality: "sampled_dense_score_preservation"
+    # sampled_quality_queries: 32
+    utility_low: 0.0
 
 optimization:
-  budget_gb: 10.00
-  algorithm: "lagrangian_dual"
-  max_iter: 25
+  # budget_gb: 10.00
+  budget_gb: 8.00
+  # budget_gb: 5.00
+  algorithm: "lagrangian_relaxation"
+  max_iter: 150
   lambda_low: 0.0
   lambda_high: 1.0e-2
   tolerance: 1.0e-3
@@ -67,11 +91,12 @@ retrieval:
   mode: "dense_exact"
   top_k: 100
   candidate_k: 20000
+  # candidate_k: 2000
   terrier_wmodel: "BM25"
 
 execution:
-  output_dir: "outputs"
-  experiment_name: "starbucks_msmarco_logrel_bm25_cos"
+  output_dir: "outputs/starbucks_msmarco"
+  experiment_name: "dl19_dl20_dot_logrel_bm25_tailres_8gb"
   device: "cuda"
   dtype: "float16"
   doc_batch_size: 128
