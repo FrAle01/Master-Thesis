@@ -1,10 +1,7 @@
 __pycache__/
 *.py[cod]
 .venv/
-tests/
-!matryoshka_optimization_codebase/tests/
 matryoshka_optimization_codebase/tests/*
-!matryoshka_optimization_codebase/tests/test_lagrangian_optimizer.py
 outputs/
 logs/
 indices/

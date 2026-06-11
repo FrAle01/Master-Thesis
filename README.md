@@ -19,6 +19,8 @@ The code is designed to be modular and readable. The environment in this sandbox
   - optional fine-tuning of a base embedding model with `MatryoshkaLoss` or `Matryoshka2dLoss`
   - optional LoRA adapter fine-tuning for `sentence_transformers` backends (base model + adapter at inference)
 - **Utility metrics**
+  - query-log utility estimation (default)
+  - query-independent residual-norm utility estimation
   - relative score dissimilarity (default)
   - absolute score error
   - squared score error
@@ -189,7 +191,11 @@ The multiplier search produces candidate assignments for the relaxed problem. A 
 
 ### 3) Utility estimation
 
-The utility table is estimated from sampled `(query, document)` pairs:
+`utility.estimator` selects one of two independent utility strategies.
+
+#### Query-log estimator
+
+With `utility.estimator: query_log` (the default), the utility table is estimated from sampled `(query, document)` pairs:
 
 - full score `s(d,q)` is computed using the full profile
 - reduced score `s_r(d,q)` is computed using the candidate profile
@@ -200,6 +206,24 @@ The default metric is the robust version of **relative score dissimilarity**:
 ```text
 1 - min(1, |s - s_r| / max(|s|, eps))
 ```
+
+#### Residual-norm estimator
+
+With `utility.estimator: residual_norm`, optimization does not load or encode an optimization query log. It uses the evaluation corpus embeddings directly:
+
+```text
+utility(d, m) =
+    clamp(1 - norm(d[m:]) / max(norm(d), epsilon), 0, 1)
+```
+
+- `utility.residual_norm.norm` selects the L1 (`1`) or L2 (`2`) norm.
+- `utility.residual_norm.epsilon` protects the denominator.
+- zero document vectors and the full profile receive utility `1.0`.
+- profile dimensions are interpreted as prefix truncations of the full document embedding.
+
+Residual mode uses `data.eval_pyterrier_dataset` as its dataset source, or the local evaluation inputs `local_eval_corpus_path`, `local_eval_topics_path`, and `local_eval_qrels_path`. Primary optimization dataset fields are optional in this mode.
+
+The generic estimator report is written to `utility_estimation_report.json`. Query-log mode also retains `relevance_estimation_report.json`; residual mode does not create sampled score-pair output.
 
 ## Outputs
 
@@ -224,3 +248,4 @@ outputs/<experiment_name>/
 - `configs/starbucks_msmarco_batch.yaml`
 - `configs/finetune_nomic_msmarco_batch.yaml`
 - `configs/finetune_nomic_lora_msmarco_batch.yaml`
+- `configs/starbucks_msmarco_residual_norm_eval.yaml`

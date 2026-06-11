@@ -35,6 +35,7 @@ Optional top-level sections (have defaults):
 - `topic_column` (str)
 - `docno_column` (str)
 - `local_corpus_path` (str|null)
+- `local_eval_corpus_path` (str|null)
 - `local_topics_path` (str|null)
 - `local_qrels_path` (str|null)
 - `local_eval_topics_path` (str|null)
@@ -73,8 +74,12 @@ Optional top-level sections (have defaults):
 - `hf_embeddings_vector_column` (str)
 
 Validation/logic constraints:
-- If `pyterrier_dataset` is null, all are required:
+- With `utility.estimator=query_log`, if `pyterrier_dataset` is null, all are required:
   - `local_corpus_path`, `local_topics_path`, `local_qrels_path`
+- With `utility.estimator=residual_norm`, primary dataset/query fields may be omitted. The evaluation source must be either:
+  - `eval_pyterrier_dataset` (falling back to `pyterrier_dataset`), or
+  - local evaluation inputs, with fallback to their primary counterparts:
+    `local_eval_corpus_path`, `local_eval_topics_path`, `local_eval_qrels_path`.
 - If `full_embeddings_source` is `auto` or `hf_dataset`, `hf_embeddings_repo_id` is required.
 - If `training.enabled=true`:
   - `training_format=jsonl_triplet` requires `training_local_path`.
@@ -115,6 +120,9 @@ Validation/logic constraints:
 - `model.full_profile_name` must exist in this list.
 
 ### 1.4 `utility` (UtilityConfig)
+- `estimator` (str)
+  - Allowed: `query_log`, `residual_norm`
+  - Default: `query_log`
 - `metric` (str)
   - Allowed:
     - `relative_score_dissimilarity`
@@ -138,6 +146,23 @@ Validation/logic constraints:
     - selected profile gets utility `1.0`
     - all other profiles get utility `0.0`
   - If null, fallback defaults to `model.full_profile_name`
+
+Nested `utility.residual_norm`:
+- `norm` (int)
+  - Allowed: `1`, `2`
+  - Default: `2`
+- `epsilon` (float)
+  - Must be `> 0`
+  - Default: `1e-12`
+
+For profile dimension `m`, residual mode computes:
+
+```text
+utility(d,m) =
+    clamp(1 - ||d[m:]||_p / max(||d||_p, epsilon), 0, 1)
+```
+
+Norm accumulation uses float32. Zero vectors and the full profile receive utility `1.0`.
 
 Nested `utility.relevance`:
 - `mode` (str)

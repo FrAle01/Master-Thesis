@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import logging
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional
@@ -124,8 +124,29 @@ class PyTerrierLoader:
                 bool(self.data_cfg.eval_qrels_variant),
                 bool(self.data_cfg.local_eval_topics_path),
                 bool(self.data_cfg.local_eval_qrels_path),
+                bool(self.data_cfg.local_eval_corpus_path),
             ]
         )
+
+    def for_evaluation(self) -> "PyTerrierLoader":
+        eval_cfg = replace(
+            self.data_cfg,
+            pyterrier_dataset=self.data_cfg.eval_pyterrier_dataset or self.data_cfg.pyterrier_dataset,
+            dataset_provider=self.data_cfg.eval_dataset_provider or self.data_cfg.dataset_provider,
+            topics_variant=self.data_cfg.eval_topics_variant or self.data_cfg.topics_variant,
+            qrels_variant=self.data_cfg.eval_qrels_variant or self.data_cfg.qrels_variant,
+            local_corpus_path=self.data_cfg.local_eval_corpus_path or self.data_cfg.local_corpus_path,
+            local_topics_path=self.data_cfg.local_eval_topics_path or self.data_cfg.local_topics_path,
+            local_qrels_path=self.data_cfg.local_eval_qrels_path or self.data_cfg.local_qrels_path,
+            eval_pyterrier_dataset=None,
+            eval_dataset_provider=None,
+            eval_topics_variant=None,
+            eval_qrels_variant=None,
+            local_eval_corpus_path=None,
+            local_eval_topics_path=None,
+            local_eval_qrels_path=None,
+        )
+        return PyTerrierLoader(eval_cfg)
 
     def eval_override_fallback_warnings(self) -> List[str]:
         warnings: List[str] = []
@@ -141,6 +162,12 @@ class PyTerrierLoader:
             warnings.append("local_eval_topics_path is set but local_eval_qrels_path is not; qrels will fall back to dataset source.")
         if self.data_cfg.local_eval_qrels_path and not self.data_cfg.local_eval_topics_path:
             warnings.append("local_eval_qrels_path is set but local_eval_topics_path is not; topics will fall back to dataset source.")
+        if self.data_cfg.local_eval_corpus_path and not (
+            self.data_cfg.local_eval_topics_path or self.data_cfg.eval_pyterrier_dataset
+        ):
+            warnings.append(
+                "local_eval_corpus_path is set without an explicit evaluation topic source; topics will fall back to the primary source."
+            )
         return warnings
 
     def load_eval_topics(self) -> pd.DataFrame:

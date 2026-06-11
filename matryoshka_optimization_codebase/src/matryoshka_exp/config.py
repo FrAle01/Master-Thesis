@@ -62,6 +62,7 @@ class DataConfig:
     hf_embeddings_split: str = "train"
     hf_embeddings_docno_column: str = "docno"
     hf_embeddings_vector_column: str = "full_embedding"
+    local_eval_corpus_path: Optional[str] = None
 
 
 @dataclass
@@ -139,6 +140,11 @@ class TrainingConfig:
 @dataclass
 class UtilityConfig:
     @dataclass
+    class ResidualNormConfig:
+        norm: int = 2
+        epsilon: float = 1e-12
+
+    @dataclass
     class RelevanceScaleConfig:
         mode: str = "minmax"
         min_label: float = 0.0
@@ -181,6 +187,8 @@ class UtilityConfig:
     default_utility_profile_name: Optional[str] = None
     relevance: "UtilityConfig.RelevanceConfig" = field(default_factory=lambda: UtilityConfig.RelevanceConfig())
     tail: "UtilityConfig.TailConfig" = field(default_factory=lambda: UtilityConfig.TailConfig())
+    estimator: str = "query_log"
+    residual_norm: "UtilityConfig.ResidualNormConfig" = field(default_factory=lambda: UtilityConfig.ResidualNormConfig())
 
 
 @dataclass
@@ -274,6 +282,7 @@ def _construct_utility_config(payload: Optional[Dict[str, Any]]) -> UtilityConfi
     payload = dict(payload or {})
     relevance_payload = dict(payload.pop("relevance", {}) or {})
     tail_payload = dict(payload.pop("tail", {}) or {})
+    residual_norm_payload = dict(payload.pop("residual_norm", {}) or {})
     scale_payload = dict(relevance_payload.pop("scale", {}) or {})
     scale_cfg = _construct_dataclass(UtilityConfig.RelevanceScaleConfig, scale_payload)
     relevance_cfg = UtilityConfig.RelevanceConfig(
@@ -281,7 +290,13 @@ def _construct_utility_config(payload: Optional[Dict[str, Any]]) -> UtilityConfi
         scale=scale_cfg,
     )
     tail_cfg = _construct_dataclass(UtilityConfig.TailConfig, tail_payload)
-    return UtilityConfig(**payload, relevance=relevance_cfg, tail=tail_cfg)
+    residual_norm_cfg = _construct_dataclass(UtilityConfig.ResidualNormConfig, residual_norm_payload)
+    return UtilityConfig(
+        **payload,
+        relevance=relevance_cfg,
+        tail=tail_cfg,
+        residual_norm=residual_norm_cfg,
+    )
 
 
 def _validate_choice(name: str, value: str, allowed: set[str]) -> None:
@@ -352,9 +367,17 @@ def _validate_config(cfg: ExperimentConfig) -> None:
     if cfg.utility.default_utility_profile_name is None:
         cfg.utility.default_utility_profile_name = cfg.model.full_profile_name
 
+    full_profile_dimension = next(
+        profile.dimension for profile in cfg.profiles if profile.name == cfg.model.full_profile_name
+    )
     for profile in cfg.profiles:
         if profile.dimension <= 0:
             raise ValueError(f"Profile `{profile.name}` has non-positive dimension: {profile.dimension}.")
+        if profile.dimension > full_profile_dimension:
+            raise ValueError(
+                f"Profile `{profile.name}` dimension {profile.dimension} exceeds full profile dimension "
+                f"{full_profile_dimension}."
+            )
         if profile.cost_is_explicit and (profile.cost_bytes is None or profile.cost_bytes <= 0):
             raise ValueError(f"Profile `{profile.name}` has `cost_is_explicit=true` but invalid `cost_bytes`: {profile.cost_bytes}.")
 
@@ -369,6 +392,7 @@ def _validate_config(cfg: ExperimentConfig) -> None:
     _validate_choice("execution.retrieval_device", cfg.execution.retrieval_device, {"cuda", "cpu"})
     _validate_choice("execution.embedding_checkpoint_resume", cfg.execution.embedding_checkpoint_resume, {"auto", "restart", "fail"})
     _validate_choice("retrieval.mode", cfg.retrieval.mode, {"dense_exact", "pyterrier_candidates"})
+    _validate_choice("utility.estimator", cfg.utility.estimator, {"query_log", "residual_norm"})
     _validate_choice(
         "utility.metric",
         cfg.utility.metric,
@@ -415,6 +439,10 @@ def _validate_config(cfg: ExperimentConfig) -> None:
         raise ValueError("`retrieval.top_k` must be > 0.")
     if cfg.utility.margin_negatives <= 0:
         raise ValueError("`utility.margin_negatives` must be > 0.")
+    if int(cfg.utility.residual_norm.norm) not in {1, 2}:
+        raise ValueError("`utility.residual_norm.norm` must be either 1 or 2.")
+    if float(cfg.utility.residual_norm.epsilon) <= 0.0:
+        raise ValueError("`utility.residual_norm.epsilon` must be > 0.")
     if cfg.utility.sample_pairs_per_query == 0 or cfg.utility.sample_pairs_per_query < -1:
         raise ValueError("`utility.sample_pairs_per_query` must be -1 (unlimited) or > 0.")
     if cfg.execution.embedding_checkpoint_every_docs <= 0:
@@ -445,19 +473,35 @@ def _validate_config(cfg: ExperimentConfig) -> None:
         raise ValueError("`utility.tail.max_tail_relevance` must be >= 0.")
     _validate_choice("utility.aggregate", cfg.utility.aggregate, {"mean"})
 
-    if cfg.data.pyterrier_dataset is None:
-        missing = []
-        if not cfg.data.local_topics_path:
-            missing.append("data.local_topics_path")
-        if not cfg.data.local_qrels_path:
-            missing.append("data.local_qrels_path")
-        if not cfg.data.local_corpus_path:
-            missing.append("data.local_corpus_path")
-        if missing:
-            raise ValueError(
-                "When `data.pyterrier_dataset` is not set, local inputs are required. Missing: "
-                + ", ".join(missing)
-            )
+    if cfg.utility.estimator == "query_log":
+        if cfg.data.pyterrier_dataset is None:
+            missing = []
+            if not cfg.data.local_topics_path:
+                missing.append("data.local_topics_path")
+            if not cfg.data.local_qrels_path:
+                missing.append("data.local_qrels_path")
+            if not cfg.data.local_corpus_path:
+                missing.append("data.local_corpus_path")
+            if missing:
+                raise ValueError(
+                    "When `data.pyterrier_dataset` is not set, local inputs are required. Missing: "
+                    + ", ".join(missing)
+                )
+    else:
+        evaluation_dataset = cfg.data.eval_pyterrier_dataset or cfg.data.pyterrier_dataset
+        if evaluation_dataset is None:
+            missing = []
+            if not (cfg.data.local_eval_topics_path or cfg.data.local_topics_path):
+                missing.append("data.local_eval_topics_path")
+            if not (cfg.data.local_eval_qrels_path or cfg.data.local_qrels_path):
+                missing.append("data.local_eval_qrels_path")
+            if not (cfg.data.local_eval_corpus_path or cfg.data.local_corpus_path):
+                missing.append("data.local_eval_corpus_path")
+            if missing:
+                raise ValueError(
+                    "Residual-norm utility requires an evaluation dataset or complete local evaluation inputs. "
+                    "Missing: " + ", ".join(missing)
+                )
 
     if cfg.training.enabled:
         if cfg.data.training_format == "jsonl_triplet" and not cfg.data.training_local_path:

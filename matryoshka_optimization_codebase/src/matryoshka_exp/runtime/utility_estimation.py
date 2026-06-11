@@ -24,13 +24,53 @@ from .relevance.weak_estimators import (
     combine_hybrid_candidates,
     estimate_from_candidates,
 )
+from .utility_estimators.contracts import (
+    UtilityEstimationRequest,
+    UtilityEstimationResult,
+    UtilityEstimator as UtilityEstimatorContract,
+)
 
 
-class UtilityEstimator:
+class QueryLogUtilityEstimator(UtilityEstimatorContract):
+    requires_query_data = True
+
     def __init__(self, config, logger):
-        self.config = config
-        self.logger = logger
-        self.last_report = {}
+        super().__init__(config, logger)
+
+    def estimate(self, request: UtilityEstimationRequest) -> UtilityEstimationResult:
+        required = {
+            "loader": request.loader,
+            "adapter": request.adapter,
+            "topics": request.topics,
+            "qrels": request.qrels,
+            "query_embeddings": request.query_embeddings,
+            "corpus_metadata": request.corpus_metadata,
+        }
+        missing = [name for name, value in required.items() if value is None]
+        if missing:
+            raise ValueError(f"Query-log utility estimation requires: {missing}")
+        pair_details, utility_table = self.estimate_for_subset(
+            loader=request.loader,
+            adapter=request.adapter,
+            profiles=request.profiles,
+            full_profile=request.full_profile,
+            topics=request.topics,
+            qrels=request.qrels,
+            subset_docnos=request.docnos,
+            subset_doc_embeddings=request.doc_embeddings,
+            full_query_embeddings=request.query_embeddings,
+            corpus_metadata=request.corpus_metadata,
+        )
+        self.last_report = {
+            "estimator": "query_log",
+            "requires_query_data": True,
+            **self.last_report,
+        }
+        return UtilityEstimationResult(
+            utility_table=utility_table,
+            pair_details=pair_details,
+            report=self.last_report,
+        )
 
     def _compute_score_preservation(
         self,
@@ -565,3 +605,6 @@ class _PairRowsParquetWriter:
             self.writer.close()
         elif not self.path.exists():
             pd.DataFrame(columns=self.columns).to_parquet(self.path, index=False)
+
+
+UtilityEstimator = QueryLogUtilityEstimator
