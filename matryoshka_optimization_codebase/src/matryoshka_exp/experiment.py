@@ -1,30 +1,26 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from pathlib import Path
 from typing import Dict
 
 import pandas as pd
-from tqdm import tqdm
 
 from .config import ExperimentConfig, save_config_snapshot
 from .data.pyterrier_utils import PyTerrierLoader
 from .data.query_routing import route_dual_source, route_shared, route_split_by_qrels
 from .logging_utils import configure_logging
 from .models.factory import create_encoder
-from .optimization.errors import InfeasibleOptimizationError
-from .optimization.factory import create_optimizer
 from .results.experiment_reporting import (
     build_experiment_summary,
     build_memory_summary,
-    build_optimization_report,
 )
 from .results.persistence import ensure_dir, save_df, save_json
 from .runtime.device_policy import sync_profile_costs_with_observed_dtype
 from .runtime.embedding_pipeline import EmbeddingPipeline
 from .runtime.evaluation_pipeline import EvaluationPipeline
+from .runtime.optimization_pipeline import BatchOptimizationPipeline
 from .runtime.retrieval_pipeline import RetrievalPipeline
-from .runtime.utility_estimators import UtilityEstimationRequest, create_utility_estimator
+from .runtime.utility_estimators import create_utility_estimator
 from .training.sbert_trainer import SbertMatryoshkaFinetuner
 
 
@@ -36,6 +32,13 @@ class ExperimentRunner:
         save_config_snapshot(config, self.output_dir / "config.snapshot.yaml")
         self.embedding_pipeline = EmbeddingPipeline(config, self.output_dir, self.logger)
         self.utility_estimator = create_utility_estimator(config, self.logger)
+        self.optimization_pipeline = BatchOptimizationPipeline(
+            config,
+            self.output_dir,
+            self.logger,
+            self.embedding_pipeline,
+            self.utility_estimator,
+        )
         self.retrieval_pipeline = RetrievalPipeline(config, self.output_dir, self.logger)
         self.evaluation_pipeline = EvaluationPipeline(config)
 
@@ -98,7 +101,7 @@ class ExperimentRunner:
             len(routed.opt_topics),
         )
 
-        payload = self._run_batch(
+        payload = self.optimization_pipeline.run(
             loader,
             adapter,
             profiles,
@@ -131,7 +134,7 @@ class ExperimentRunner:
             "Starting query-independent optimization with residual norm p=%d using the evaluation corpus.",
             int(self.config.utility.residual_norm.norm),
         )
-        payload = self._run_batch(
+        payload = self.optimization_pipeline.run(
             eval_loader,
             adapter,
             profiles,
@@ -325,93 +328,3 @@ class ExperimentRunner:
     def _save_profile_catalog(self, profiles) -> None:
         catalog = pd.DataFrame([asdict(profile) for profile in profiles])
         save_df(catalog, self.output_dir / "profile_catalog.csv")
-
-    def _run_batch(
-        self,
-        loader,
-        adapter,
-        profiles,
-        _profile_by_name,
-        full_profile,
-        topics=None,
-        qrels=None,
-        full_query_embeddings=None,
-    ):
-        corpus_records = list(
-            tqdm(
-                loader.iter_corpus(),
-                desc="Loading corpus records",
-                disable=not self.config.execution.verbose,
-            )
-        )
-        docnos = [record.docno for record in corpus_records]
-        metadata = pd.DataFrame(
-            [{"docno": record.docno, "text": record.text} for record in corpus_records],
-            columns=["docno", "text"],
-        )
-        full_doc_embeddings = self.embedding_pipeline.load_or_compute_full_doc_embeddings(
-            adapter=adapter,
-            full_profile=full_profile,
-            docnos=docnos,
-            corpus_records=corpus_records,
-        )
-        sync_profile_costs_with_observed_dtype(
-            self.logger,
-            profiles,
-            full_doc_embeddings,
-            expected_dtype_name=self.config.execution.dtype,
-            stage="batch document encoding",
-        )
-        save_df(metadata, Path(self.config.execution.output_dir) / "corpus_metadata.parquet")
-
-        estimation = self.utility_estimator.estimate(
-            UtilityEstimationRequest(
-                profiles=profiles,
-                full_profile=full_profile,
-                docnos=docnos,
-                doc_embeddings=full_doc_embeddings,
-                loader=loader,
-                adapter=adapter,
-                topics=topics,
-                qrels=qrels,
-                query_embeddings=full_query_embeddings,
-                corpus_metadata=metadata,
-            )
-        )
-        utility_pairs_df = estimation.pair_details
-        utility_table_df = estimation.utility_table
-        if self.config.execution.save_score_pairs and not utility_pairs_df.empty:
-            save_df(utility_pairs_df, self.output_dir / "sampled_score_pairs.parquet")
-        save_df(utility_table_df, self.output_dir / "per_document_utility.parquet")
-
-        optimizer = create_optimizer(self.config, profiles, self.logger)
-        opt_result = optimizer.solve(utility_table_df)
-        assignments = opt_result.assignments
-        save_df(assignments, self.output_dir / "assignments.parquet")
-        save_json(
-            build_optimization_report(opt_result),
-            self.output_dir / "optimization_result.json",
-        )
-        save_json(estimation.report, self.output_dir / "utility_estimation_report.json")
-        if self.utility_estimator.requires_query_data:
-            save_json(estimation.report, self.output_dir / "relevance_estimation_report.json")
-
-        if not opt_result.feasible:
-            budget = self.config.budget_bytes_resolved()
-            assigned = int(assignments["cost_bytes"].sum())
-            self.logger.error(
-                "Optimization infeasible. budget_bytes=%s assigned_cost_bytes=%s relative_overflow=%.6f",
-                budget,
-                assigned,
-                (assigned - budget) / max(budget, 1),
-            )
-            raise InfeasibleOptimizationError(budget_bytes=budget, assigned_cost_bytes=assigned)
-
-        return {
-            "assignments": assignments,
-            "utility_pairs_df": utility_pairs_df,
-            "utility_table_df": utility_table_df,
-            "docnos": docnos,
-            "opt_result": opt_result,
-            "full_doc_embeddings": full_doc_embeddings,
-        }
