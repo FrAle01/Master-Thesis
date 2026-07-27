@@ -5,6 +5,7 @@ This folder contains a Jupyter notebook to discover, load, visualize, and compar
 ## Files
 
 - `experiment_outputs_dashboard.ipynb`: main notebook
+- `pt_experiment_results.ipynb`: focused table view of selected metrics from every `pt_experiment.csv`
 - `exports/`: generated tables and plots (`<timestamp>` subfolders)
 
 ## Expected Output Location
