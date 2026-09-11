@@ -30,6 +30,7 @@ def aggregate_utility_table(
     profiles,
     full_profile,
     per_doc_profile_utilities_sum,
+    per_doc_profile_utilities_count,
     *,
     default_utility_profile_name: str | None,
     tail_lookup=None,
@@ -39,9 +40,11 @@ def aggregate_utility_table(
     for docno in [str(d) for d in subset_docnos]:
         has_any = False
         for profile in profiles:
+
             agg_value = per_doc_profile_utilities_sum.get((docno, profile.name))
             if agg_value is not None:
-                agg = float(agg_value)
+                count = per_doc_profile_utilities_count.get((docno, profile.name), 1)
+                agg = float(agg_value) / count
                 has_any = True
             else:
                 agg = fallback_utility_for_profile(

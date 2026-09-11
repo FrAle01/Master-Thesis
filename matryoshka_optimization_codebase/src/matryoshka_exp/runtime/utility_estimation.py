@@ -163,6 +163,7 @@ class QueryLogUtilityEstimator(UtilityEstimatorContract):
                 stream_pairs_to_disk = False
         sampled_rows = [] if not stream_pairs_to_disk else None
         per_doc_profile_utilities_sum = defaultdict(float)
+        per_doc_profile_utilities_count = defaultdict(float)
         qid_to_position = {str(qid): i for i, qid in enumerate(topics["qid"].astype(str).tolist())}
 
         for qid, group in tqdm(
@@ -224,6 +225,7 @@ class QueryLogUtilityEstimator(UtilityEstimatorContract):
                         pair_writer.add_row(row)
                     else:
                         sampled_rows.append(row)
+                    per_doc_profile_utilities_count[(docno, profile.name)] += 1
                     per_doc_profile_utilities_sum[(docno, profile.name)] += utility
 
         if pair_writer is not None:
@@ -248,6 +250,7 @@ class QueryLogUtilityEstimator(UtilityEstimatorContract):
             profiles,
             full_profile,
             per_doc_profile_utilities_sum,
+            per_doc_profile_utilities_count,
             default_utility_profile_name=self.config.utility.default_utility_profile_name,
             tail_lookup=tail_lookup_from_table(tail_table_df),
         )
