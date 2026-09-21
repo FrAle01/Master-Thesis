@@ -2,7 +2,9 @@ __pycache__/
 *.py[cod]
 .venv/
 matryoshka_optimization_codebase/tests/*
-outputs/
+matryoshka_optimization_codebase/outputs/**
+!matryoshka_optimization_codebase/outputs/**/
+!matryoshka_optimization_codebase/outputs/**/pt_experiment.csv
 logs/
 indices/
 analysis_viz/exports/
